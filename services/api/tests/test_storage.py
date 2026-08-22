@@ -25,7 +25,7 @@ async def test_round_trip_checksum_size_and_idempotent_delete(tmp_path: Path) ->
 async def test_rejects_path_traversal_media_types_and_oversized_streams(tmp_path: Path) -> None:
     store = LocalArtifactStore(tmp_path, max_bytes=4)
     with pytest.raises(StorageError):
-        await store.put("temporary", chunks(b"x"), media_type="image/png", metadata={})
+        await store.put("temporary", chunks(b"x"), media_type="image/gif", metadata={})
     with pytest.raises(StorageError):
         await store.put("temporary", chunks(b"12345"), media_type="text/plain", metadata={})
     with pytest.raises(StorageError):

@@ -14,7 +14,7 @@ The planned direction uses a Next.js and TypeScript web client, a Python/FastAPI
 
 ## Project status
 
-**Phase 0 — Architecture**, **Phase 1 — Frontend**, and **Phase 2 — Backend + Jobs** are complete. Phase 2 implements the FastAPI command/query API, PostgreSQL migrations, Redis-backed durable outbox dispatch, asynchronous planning-placeholder worker, compare-and-set lifecycle transitions, idempotency, cancellation, durable events, SSE replay, local artifact storage, health/readiness, and structured logging. It deliberately stops at `BROWSER_INITIALIZING`; no browser, AI, discovery, extraction, validation, or exporter engine exists yet.
+**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, and **Phase 3 — Playwright Engine** are complete. Phase 3 replaces the former browser stop with an isolated, policy-scoped Chromium operation that loads only the permitted source page, records safe navigation metadata, persists permitted screenshots through the storage abstraction, emits durable progress events, and then stops at the discovery boundary. It does not implement AI planning, discovery, extraction, validation, or export behavior.
 
 See the [Phase 0 architecture documentation](docs/architecture.md) for the system overview. Related contracts and decisions are documented in:
 
@@ -28,11 +28,13 @@ See the [Phase 0 architecture documentation](docs/architecture.md) for the syste
 - [Agent boundaries](docs/agent-boundaries.md)
 - [Roadmap and phase boundaries](docs/phase-boundaries.md)
 - [ADR-001: Modular asynchronous architecture](docs/decisions/ADR-001-architecture.md)
+- [Phase 3 Playwright engine](docs/phase3-playwright-engine.md)
+- [ADR-002: Browser artifact metadata](docs/decisions/ADR-002-browser-artifacts.md)
 
 ## Local backend development
 
-Copy `.env.example` to `.env`, then start PostgreSQL and Redis with `docker compose up -d postgres redis` when Docker is available. Install Python dependencies with `uv pip install --system -e '.[dev]'`. Apply the reproducible schema with `DATABASE_URL=postgresql+asyncpg://wde:wde@localhost:5432/wde alembic -c services/api/alembic.ini upgrade head`. Run the API with `uvicorn wde_api.main:app --reload`, the worker with `python -m wde_api.worker`, and use `/docs`, `/openapi.json`, `/health`, and `/ready` to inspect the API.
+Copy `.env.example` to `.env`, then start PostgreSQL and Redis with `docker compose up -d postgres redis` when Docker is available. Install Python dependencies with `uv pip install --system -e '.[dev]'`, then install Chromium with `python -m playwright install chromium`. Apply the reproducible schema with `DATABASE_URL=postgresql+asyncpg://wde:wde@localhost:5432/wde alembic -c services/api/alembic.ini upgrade head`. Run the API with `uvicorn wde_api.main:app --reload`, the worker with `python -m wde_api.worker`, and use `/docs`, `/openapi.json`, `/health`, and `/ready` to inspect the API.
 
 Run `pytest`, `ruff check services/api/src`, `ruff format --check services/api/src`, and `alembic -c services/api/alembic.ini current` before contributing. The optional `apps/web/lib/api-client.ts` is the Phase 1-compatible client seam; it does not replace the current mock UI flow.
 
-Development continues incrementally. The recommended next phase is **Phase 3 — Playwright Engine**; it must consume the Phase 2 job boundary without adding AI planning, discovery, extraction, validation, or export behavior.
+Development continues incrementally. The recommended next phase is **Phase 4 — AI Planner**. It must provide a schema-validated, versioned plan without adding discovery, extraction, validation, or export behavior.

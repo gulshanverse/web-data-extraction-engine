@@ -19,6 +19,26 @@ class Settings(BaseSettings):
     dev_principal_email: str = "developer@example.invalid"
     worker_lease_seconds: int = Field(default=120, ge=30, le=3600)
     api_event_poll_seconds: float = Field(default=0.5, ge=0.1, le=5.0)
+    browser_headless: bool = True
+    browser_navigation_timeout_ms: int = Field(default=30_000, ge=1_000, le=120_000)
+    browser_action_timeout_ms: int = Field(default=10_000, ge=500, le=60_000)
+    browser_page_timeout_ms: int = Field(default=45_000, ge=1_000, le=180_000)
+    browser_launch_timeout_ms: int = Field(default=30_000, ge=1_000, le=120_000)
+    browser_shutdown_timeout_ms: int = Field(default=10_000, ge=1_000, le=60_000)
+    browser_max_pages: int = Field(default=1, ge=1, le=20)
+    browser_max_redirects: int = Field(default=5, ge=0, le=20)
+    browser_max_contexts: int = Field(default=2, ge=1, le=16)
+    browser_max_lifetime_seconds: int = Field(default=120, ge=5, le=900)
+    browser_max_response_bytes: int = Field(default=10_485_760, ge=65_536, le=104_857_600)
+    browser_max_screenshot_bytes: int = Field(default=5_242_880, ge=65_536, le=20_971_520)
+    browser_max_download_bytes: int = Field(default=10_485_760, ge=65_536, le=104_857_600)
+    browser_viewport_width: int = Field(default=1440, ge=320, le=3840)
+    browser_viewport_height: int = Field(default=900, ge=320, le=2160)
+    browser_locale: str = "en-US"
+    browser_timezone_id: str = "UTC"
+    browser_user_agent: str = (
+        "WebDataExtractionEngine/0.3 (+https://github.com/gulshanverse/web-data-extraction-engine)"
+    )
 
 
 @lru_cache

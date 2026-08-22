@@ -28,7 +28,15 @@ class ArtifactRef:
 
 
 class LocalArtifactStore:
-    allowed_media_types = {"application/json", "text/plain", "text/csv", "application/octet-stream"}
+    allowed_media_types = {
+        "application/json",
+        "application/octet-stream",
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "text/csv",
+        "text/plain",
+    }
 
     def __init__(self, root: Path, *, max_bytes: int = 100 * 1024 * 1024) -> None:
         self.root = root.resolve()

@@ -12,6 +12,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from wde_api.auth import NotAuthorized
+from wde_api.browser_errors import BrowserCancelled, BrowserEngineError
+from wde_api.browser_types import BrowserOperationRequest, BrowserOperationResult
 from wde_api.domain import (
     ACTIVE_STATES,
     EVENT_FOR_TRANSITION,
@@ -21,9 +23,11 @@ from wde_api.domain import (
     retry_delay_seconds,
 )
 from wde_api.models import (
+    BrowserArtifact,
     ExtractionJob,
     ExtractionPlan,
     IdempotencyKey,
+    Page,
     ProgressEvent,
     Project,
     Record,
@@ -212,6 +216,9 @@ class JobService:
             correlation_id=correlation_id,
         )
         session.add(event)
+        # A browser operation can emit several lifecycle facts in a single transaction.
+        # Flush each insert so the next MAX(sequence_no) query sees the durable pending row.
+        await session.flush()
         return event
 
     async def transition(
@@ -323,8 +330,199 @@ class JobService:
             operation_key=operation_key,
             correlation_id=correlation_id,
         )
+        browser_key = f"job:{job_id}:browser:1"
+        session.add(
+            WorkOutbox(
+                job_id=job_id,
+                project_id=job.project_id,
+                command_type="run_browser_capture",
+                operation_key=browser_key,
+                payload={
+                    "job_id": str(job_id),
+                    "project_id": str(job.project_id),
+                    "correlation_id": str(correlation_id),
+                    "operation_key": browser_key,
+                    "attempt": 1,
+                },
+            )
+        )
         job.lease_owner = None
         job.lease_expires_at = None
+
+    async def prepare_browser_capture(
+        self, session: AsyncSession, command: dict[str, object], *, worker_id: str
+    ) -> BrowserOperationRequest | None:
+        job_id = uuid.UUID(str(command["job_id"]))
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        if job is None or job.status in {JobStatus.CANCELLED.value, JobStatus.FAILED.value}:
+            return None
+        if job.status != JobStatus.BROWSER_INITIALIZING.value:
+            raise InvalidTransition("Browser work cannot claim the current job state.")
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        if job.cancel_requested_at:
+            await self.transition(
+                session,
+                job_id=job_id,
+                expected_state=JobStatus.BROWSER_INITIALIZING,
+                target_state=JobStatus.CANCELLED,
+                reason="Cancellation acknowledged before browser launch.",
+                operation_key=str(command["operation_key"]),
+                correlation_id=correlation_id,
+            )
+            return None
+        source = await session.get(Source, job.source_id)
+        if source is None:
+            raise InvalidTransition("Browser work is missing its source metadata.")
+        job.lease_owner = worker_id
+        job.lease_expires_at = utcnow() + timedelta(seconds=120)
+        await self._append_event(
+            session,
+            job,
+            "browser_initializing",
+            {"stage": JobStatus.BROWSER_INITIALIZING.value, "message": "Browser capture started."},
+            correlation_id,
+        )
+        return BrowserOperationRequest(
+            job_id=str(job.id),
+            project_id=str(job.project_id),
+            correlation_id=str(correlation_id),
+            operation_key=str(command["operation_key"]),
+            url=source.canonical_url,
+            allowed_domain=source.domain,
+            capture_screenshot=True,
+        )
+
+    async def complete_browser_capture(
+        self, session: AsyncSession, command: dict[str, object], result: BrowserOperationResult
+    ) -> None:
+        job_id = uuid.UUID(str(command["job_id"]))
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        if job is None or job.status in {JobStatus.CANCELLED.value, JobStatus.FAILED.value}:
+            return
+        if job.status != JobStatus.BROWSER_INITIALIZING.value:
+            raise InvalidTransition("Browser completion cannot update the current job state.")
+        if job.cancel_requested_at:
+            await self.transition(
+                session,
+                job_id=job_id,
+                expected_state=JobStatus.BROWSER_INITIALIZING,
+                target_state=JobStatus.CANCELLED,
+                reason="Cancellation acknowledged after browser cleanup.",
+                operation_key=str(command["operation_key"]),
+                correlation_id=correlation_id,
+            )
+            return
+        navigation = result.navigation
+        page = await session.scalar(
+            select(Page)
+            .where(Page.job_id == job.id, Page.canonical_url == navigation.final_url)
+            .with_for_update()
+        )
+        if page is None:
+            page = Page(
+                job_id=job.id,
+                url=navigation.requested_url,
+                canonical_url=navigation.final_url,
+                status="CAPTURED",
+            )
+            session.add(page)
+            await session.flush()
+        page.status = "CAPTURED"
+        page.final_url = navigation.final_url
+        page.http_status = navigation.status
+        page.content_type = navigation.content_type
+        page.title = navigation.title
+        page.viewport = navigation.viewport
+        page.navigation_time_ms = navigation.navigation_time_ms
+        page.redirect_count = navigation.redirect_count
+        page.browser_metadata = {"phase": 3, "event_count": len(result.events)}
+        page.captured_at = utcnow()
+        job.pages_processed = max(job.pages_processed, 1)
+        for browser_artifact in result.artifacts:
+            ref = browser_artifact.artifact
+            session.add(
+                BrowserArtifact(
+                    job_id=job.id,
+                    page_id=page.id,
+                    artifact_type=browser_artifact.kind,
+                    storage_key=ref.key,
+                    media_type=ref.media_type,
+                    byte_size=ref.byte_size,
+                    checksum=ref.checksum,
+                    expires_at=ref.expires_at,
+                )
+            )
+        for event in result.events:
+            await self._append_event(
+                session,
+                job,
+                str(event.get("type", "browser_event")),
+                {"stage": JobStatus.BROWSER_INITIALIZING.value, "message": "Browser lifecycle checkpoint."},
+                correlation_id,
+            )
+        await self._append_event(
+            session,
+            job,
+            "browser_completed",
+            {
+                "stage": JobStatus.BROWSER_INITIALIZING.value,
+                "message": "Browser navigation completed at the Phase 3 boundary.",
+                "page_id": str(page.id),
+            },
+            correlation_id,
+        )
+        job.lease_owner = None
+        job.lease_expires_at = None
+
+    async def fail_browser_capture(
+        self, session: AsyncSession, command: dict[str, object], error: BrowserEngineError
+    ) -> bool:
+        """Persist a browser failure and report whether the worker may retry it."""
+        job_id = uuid.UUID(str(command["job_id"]))
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        if job is None or job.status == JobStatus.CANCELLED.value:
+            return False
+        if isinstance(error, BrowserCancelled) or job.cancel_requested_at:
+            if job.status == JobStatus.BROWSER_INITIALIZING.value:
+                await self.transition(
+                    session,
+                    job_id=job.id,
+                    expected_state=JobStatus.BROWSER_INITIALIZING,
+                    target_state=JobStatus.CANCELLED,
+                    reason="Browser operation cancelled safely.",
+                    operation_key=str(command["operation_key"]),
+                    correlation_id=correlation_id,
+                )
+            return False
+        job.last_error_code = error.code
+        job.last_error_message = error.message
+        job.retryable = error.retryable
+        job.lease_owner = None
+        job.lease_expires_at = None
+        if error.retryable and int(command.get("attempt", 1)) < job.max_attempts:
+            await self._append_event(
+                session,
+                job,
+                "browser_retry_scheduled",
+                {
+                    "stage": JobStatus.BROWSER_INITIALIZING.value,
+                    "message": "A transient browser failure will be retried.",
+                },
+                correlation_id,
+            )
+            return True
+        await self.transition(
+            session,
+            job_id=job.id,
+            expected_state=JobStatus.BROWSER_INITIALIZING,
+            target_state=JobStatus.FAILED,
+            reason=error.message,
+            operation_key=str(command["operation_key"]),
+            correlation_id=correlation_id,
+        )
+        return False
 
     async def cancel(
         self, session: AsyncSession, *, job_id: uuid.UUID, principal_id: uuid.UUID, correlation_id: uuid.UUID
@@ -471,12 +669,14 @@ class JobService:
                     job.correlation_id,
                 )
                 continue
-            key = f"job:{job.id}:planning:{job.attempt}"
+            phase = "browser" if job.status == JobStatus.BROWSER_INITIALIZING.value else "planning"
+            command_type = "run_browser_capture" if phase == "browser" else "run_planning"
+            key = f"job:{job.id}:{phase}:{job.attempt}"
             session.add(
                 WorkOutbox(
                     job_id=job.id,
                     project_id=job.project_id,
-                    command_type="run_planning",
+                    command_type=command_type,
                     operation_key=key,
                     attempt=job.attempt,
                     available_at=utcnow() + timedelta(seconds=retry_delay_seconds(job.attempt)),

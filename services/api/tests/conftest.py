@@ -19,7 +19,7 @@ def isolated_database() -> None:
     with psycopg.connect(sync_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "TRUNCATE TABLE work_outbox, idempotency_keys, progress_events, generated_files, export_jobs, validation_results, records, pages, extraction_plans, extraction_jobs, sources, projects, users RESTART IDENTITY CASCADE"
+                "TRUNCATE TABLE work_outbox, idempotency_keys, progress_events, browser_artifacts, generated_files, export_jobs, validation_results, records, pages, extraction_plans, extraction_jobs, sources, projects, users RESTART IDENTITY CASCADE"
             )
             cursor.execute(
                 "INSERT INTO users (id, email, status) VALUES ('11111111-1111-1111-1111-111111111111', 'developer@example.invalid', 'ACTIVE')"

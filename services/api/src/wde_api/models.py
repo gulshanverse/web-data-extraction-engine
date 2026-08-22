@@ -156,6 +156,34 @@ class Page(Base):
     content_hash: Mapped[str | None] = mapped_column(String(128))
     discovered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    final_url: Mapped[str | None] = mapped_column(Text)
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    content_type: Mapped[str | None] = mapped_column(String(200))
+    title: Mapped[str | None] = mapped_column(String(500))
+    viewport: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    navigation_time_ms: Mapped[int | None] = mapped_column(Integer)
+    redirect_count: Mapped[int | None] = mapped_column(Integer)
+    browser_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+class BrowserArtifact(Base):
+    __tablename__ = "browser_artifacts"
+    __table_args__ = (
+        UniqueConstraint("storage_key", name="uq_browser_artifacts_storage_key"),
+        Index("ix_browser_artifacts_job_created", "job_id", "created_at"),
+    )
+    id: Mapped[uuid.UUID] = uuid_pk()
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("extraction_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    page_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("pages.id", ondelete="SET NULL"))
+    artifact_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(200), nullable=False)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = created_at()
 
 
 class Record(Base):

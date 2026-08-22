@@ -7,6 +7,10 @@ import socket
 from arq import Retry
 from arq.cron import cron
 
+from wde_api.browser_engine import PlaywrightBrowserEngine
+from wde_api.browser_errors import BrowserEngineError
+from wde_api.browser_policy import DefaultBrowserPolicy
+from wde_api.browser_types import BrowserOperationRequest
 from wde_api.database import SessionFactory
 from wde_api.domain import RetryableOperationError, retry_delay_seconds
 from wde_api.logging import configure_logging
@@ -17,7 +21,27 @@ from wde_api.services import JobService
 async def startup(_: dict) -> None:
     from wde_api.config import get_settings
 
-    configure_logging(get_settings().log_level)
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    async def cancellation_probe(job_id: str) -> bool:
+        import uuid
+
+        from wde_api.models import ExtractionJob
+
+        async with SessionFactory() as session:
+            job = await session.get(ExtractionJob, uuid.UUID(job_id))
+            return bool(job and (job.cancel_requested_at or job.status == "CANCELLED"))
+
+    def policy_factory(request: BrowserOperationRequest) -> DefaultBrowserPolicy:
+        return DefaultBrowserPolicy(
+            allowed_domain=request.allowed_domain,
+            max_pages=settings.browser_max_pages,
+            max_redirects=settings.browser_max_redirects,
+            cancellation_probe=cancellation_probe,
+        )
+
+    _["browser_engine"] = PlaywrightBrowserEngine.from_settings(settings, policy_factory)
 
 
 async def recover_abandoned_work(_: dict) -> None:
@@ -38,8 +62,29 @@ async def run_planning(_: dict, command: dict[str, object]) -> None:
         raise Retry(defer=retry_delay_seconds(int(command.get("attempt", 1)))) from error
 
 
+async def run_browser_capture(ctx: dict, command: dict[str, object]) -> None:
+    service = JobService()
+    async with SessionFactory() as session:
+        async with session.begin():
+            request = await service.prepare_browser_capture(session, command, worker_id=socket.gethostname())
+    if request is None:
+        return
+    try:
+        result = await ctx["browser_engine"].capture(request)
+    except BrowserEngineError as error:
+        async with SessionFactory() as session:
+            async with session.begin():
+                should_retry = await service.fail_browser_capture(session, command, error)
+        if should_retry:
+            raise Retry(defer=retry_delay_seconds(int(command.get("attempt", 1)))) from error
+        return
+    async with SessionFactory() as session:
+        async with session.begin():
+            await service.complete_browser_capture(session, command, result)
+
+
 class WorkerSettings:
-    functions = [run_planning]
+    functions = [run_planning, run_browser_capture]
     cron_jobs = [cron(recover_abandoned_work, second={0, 15, 30, 45})]
     on_startup = startup
     redis_settings = redis_settings()

@@ -20,3 +20,14 @@
 - [x] Implement job status, results, file metadata, and SSE event-stream contracts without later-phase extraction engines.
 - [x] Run database-backed integration tests, migrations, API-contract checks, security scans, and code-quality validation.
 - [ ] Commit and push Phase 2 to `main` without implementing Phase 3 or later.
+
+## Phase 3 Playwright Engine Checklist
+
+- [x] Read the complete Phase 3 specification and reconcile all Phase 0 and Phase 2 browser contracts.
+- [x] Add Playwright runtime dependencies, browser-engine interfaces, typed configuration, and local browser installation workflow.
+- [x] Implement isolated context/page lifecycle management, controlled navigation, cleanup, metadata, screenshots, and structured browser events.
+- [x] Implement DNS-aware initial and redirect policy checks, request/resource controls, limits, timeouts, cancellation checks, and safe application errors.
+- [x] Integrate browser initialization work with the durable Phase 2 orchestrator, worker, job transitions, events, and artifact storage.
+- [x] Add deterministic policy, lifecycle, redirect, cancellation, timeout, storage, worker, and integration tests.
+- [x] Run Playwright, API, worker, migration, security, lint, format, type/static, build, and phase-boundary validation.
+- [ ] Commit and push Phase 3 to `main` without implementing Phase 4 or later.
