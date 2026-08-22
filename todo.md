@@ -8,4 +8,15 @@
 - [x] Validate desktop, tablet, mobile, light mode, dark mode, keyboard access, and reduced-motion behavior.
 - [x] Apply a five-point visual self-critique and visual-review improvements.
 - [x] Run lint, tests, type, build, secret, diff, documentation-integrity, and phase-boundary checks.
-- [ ] Commit and push the completed redesign to `main`.
+- [x] Commit and push the completed redesign to `main`.
+
+## Phase 2 Backend + Jobs Checklist
+
+- [x] Read and reconcile all Phase 0 architecture contracts with the Phase 2 requirements.
+- [x] Create the Python API, domain, persistence, migration, storage, queue, worker, and test structure.
+- [x] Define the PostgreSQL schema and reproducible Alembic migrations for the required Phase 2 entities.
+- [x] Implement typed API contracts, URL policy, project/source persistence, durable idempotency, and health/readiness endpoints.
+- [x] Implement compare-and-set lifecycle transitions, ordered progress events, cancellation, retry, outbox scheduling, and the Redis worker command.
+- [x] Implement job status, results, file metadata, and SSE event-stream contracts without later-phase extraction engines.
+- [x] Run database-backed integration tests, migrations, API-contract checks, security scans, and code-quality validation.
+- [ ] Commit and push Phase 2 to `main` without implementing Phase 3 or later.

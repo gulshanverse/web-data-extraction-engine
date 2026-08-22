@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: wde
+      POSTGRES_USER: wde
+      POSTGRES_PASSWORD: wde
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wde -d wde"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  api:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://wde:wde@postgres:5432/wde
+      REDIS_URL: redis://redis:6379/0
+      ARTIFACT_ROOT: /var/lib/wde-artifacts
+    command: ["uvicorn", "wde_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes: [".:/app", "artifact-data:/var/lib/wde-artifacts"]
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://wde:wde@postgres:5432/wde
+      REDIS_URL: redis://redis:6379/0
+      ARTIFACT_ROOT: /var/lib/wde-artifacts
+    command: ["python", "-m", "wde_api.worker"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes: [".:/app", "artifact-data:/var/lib/wde-artifacts"]
+
+volumes:
+  postgres-data:
+  artifact-data:

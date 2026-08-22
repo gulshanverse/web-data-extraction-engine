@@ -14,7 +14,7 @@ The planned direction uses a Next.js and TypeScript web client, a Python/FastAPI
 
 ## Project status
 
-**Phase 0 — Architecture** is complete. The repository currently establishes the system design and contracts; functional frontend, backend, browser, AI planner, discovery, extraction, validation, export, and deployment components remain assigned to later phases.
+**Phase 0 — Architecture**, **Phase 1 — Frontend**, and **Phase 2 — Backend + Jobs** are complete. Phase 2 implements the FastAPI command/query API, PostgreSQL migrations, Redis-backed durable outbox dispatch, asynchronous planning-placeholder worker, compare-and-set lifecycle transitions, idempotency, cancellation, durable events, SSE replay, local artifact storage, health/readiness, and structured logging. It deliberately stops at `BROWSER_INITIALIZING`; no browser, AI, discovery, extraction, validation, or exporter engine exists yet.
 
 See the [Phase 0 architecture documentation](docs/architecture.md) for the system overview. Related contracts and decisions are documented in:
 
@@ -29,4 +29,10 @@ See the [Phase 0 architecture documentation](docs/architecture.md) for the syste
 - [Roadmap and phase boundaries](docs/phase-boundaries.md)
 - [ADR-001: Modular asynchronous architecture](docs/decisions/ADR-001-architecture.md)
 
-Development will continue incrementally. The recommended next phase is **Phase 1 — Frontend**; it must not bypass the documented contracts or start future-phase implementation early.
+## Local backend development
+
+Copy `.env.example` to `.env`, then start PostgreSQL and Redis with `docker compose up -d postgres redis` when Docker is available. Install Python dependencies with `uv pip install --system -e '.[dev]'`. Apply the reproducible schema with `DATABASE_URL=postgresql+asyncpg://wde:wde@localhost:5432/wde alembic -c services/api/alembic.ini upgrade head`. Run the API with `uvicorn wde_api.main:app --reload`, the worker with `python -m wde_api.worker`, and use `/docs`, `/openapi.json`, `/health`, and `/ready` to inspect the API.
+
+Run `pytest`, `ruff check services/api/src`, `ruff format --check services/api/src`, and `alembic -c services/api/alembic.ini current` before contributing. The optional `apps/web/lib/api-client.ts` is the Phase 1-compatible client seam; it does not replace the current mock UI flow.
+
+Development continues incrementally. The recommended next phase is **Phase 3 — Playwright Engine**; it must consume the Phase 2 job boundary without adding AI planning, discovery, extraction, validation, or export behavior.
