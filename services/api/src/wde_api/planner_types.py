@@ -26,7 +26,7 @@ FIELD_TYPES = {
     "currency",
     "text",
 }
-OUTPUT_FORMATS = {"excel", "csv", "json", "pdf", "docx", "markdown", "txt"}
+OUTPUT_FORMATS = {"excel", "csv", "json", "pdf", "docx", "markdown", "txt", "html"}
 _SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _FORBIDDEN = re.compile(
     r"(selector|xpath|javascript:|<script|\b(shell|sql|python)\b|system prompt|ignore.*instruction)", re.I
@@ -151,7 +151,9 @@ class CanonicalPlan(StrictModel):
     deduplication: DeduplicationIntent
     validation: ValidationIntent
     limits: Limits
-    outputs: list[Literal["excel", "csv", "json", "pdf", "docx", "markdown", "txt"]] = Field(max_length=7)
+    outputs: list[Literal["excel", "csv", "json", "pdf", "docx", "markdown", "txt", "html"]] = Field(
+        max_length=8
+    )
     assumptions: list[Assumption] = Field(default_factory=list, max_length=32)
     ambiguities: list[Ambiguity] = Field(default_factory=list, max_length=32)
 

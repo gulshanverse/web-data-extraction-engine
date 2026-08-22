@@ -32,10 +32,13 @@ class LocalArtifactStore:
         "application/json",
         "application/octet-stream",
         "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "image/jpeg",
         "image/png",
         "text/csv",
+        "text/html",
+        "text/markdown",
         "text/plain",
     }
 

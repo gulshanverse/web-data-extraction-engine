@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 
 import structlog
@@ -24,6 +25,13 @@ from wde_api.discovery_errors import (
 from wde_api.discovery_service import DiscoveryService
 from wde_api.discovery_types import DiscoveryMethod
 from wde_api.domain import retry_delay_seconds
+from wde_api.export_errors import (
+    ExportError,
+    ExportInfrastructureError,
+    ExportSerializationError,
+    ExportTooLarge,
+)
+from wde_api.export_service import render_export, writer_for
 from wde_api.extraction_errors import (
     ExtractionBrowserFailed,
     ExtractionCancelled,
@@ -39,6 +47,7 @@ from wde_api.planner_model import build_planner_model
 from wde_api.planner_service import PlannerService
 from wde_api.queue import OutboxDispatcher, redis_settings
 from wde_api.services import JobService
+from wde_api.storage import LocalArtifactStore
 from wde_api.validation_errors import ValidationEngineError, ValidationInfrastructureError
 from wde_api.validation_service import ValidationService
 
@@ -73,6 +82,8 @@ async def startup(_: dict) -> None:
     _["discovery_service"] = DiscoveryService(settings)
     _["extraction_service"] = ExtractionService(max_evidence_chars=settings.extraction_max_evidence_chars)
     _["validation_service"] = ValidationService()
+    _["export_store"] = LocalArtifactStore(settings.artifact_root, max_bytes=settings.export_max_bytes)
+    _["export_capacity"] = asyncio.Semaphore(settings.export_max_concurrency)
 
 
 async def recover_abandoned_work(_: dict) -> None:
@@ -424,8 +435,104 @@ async def run_validation(ctx: dict, command: dict[str, object]) -> None:
             raise Retry(defer=retry_delay_seconds(retry_attempt)) from exc
 
 
+async def _export_bytes_stream(payload: bytes):
+    yield payload
+
+
+async def run_export(ctx: dict, command: dict[str, object]) -> None:
+    """Generate exactly one requested format from durable validated data; no browser or model is involved."""
+    service = JobService()
+    from wde_api.config import get_settings
+
+    settings = get_settings()
+    async with SessionFactory() as session:
+        async with session.begin():
+            operation = await service.claim_export(
+                session,
+                command,
+                worker_id=socket.gethostname(),
+                lease_seconds=settings.worker_lease_seconds,
+            )
+    if operation is None:
+        return
+    reference = None
+    try:
+        async with ctx["export_capacity"]:
+            async with asyncio.timeout(settings.export_timeout_seconds):
+                async with SessionFactory() as session:
+                    dataset = await service.load_export_dataset(
+                        session, operation, max_records=settings.export_max_records
+                    )
+                    if await service.export_cancelled(session, operation):
+                        return
+                try:
+                    writer = writer_for(operation.format_name)
+                    payload = await asyncio.to_thread(render_export, dataset, operation.format_name)
+                except ExportError:
+                    raise
+                except Exception as exc:
+                    raise ExportSerializationError("Export rendering failed safely.") from exc
+                if len(payload) > settings.export_max_bytes:
+                    raise ExportTooLarge("Generated export exceeds the configured output limit.")
+                async with SessionFactory() as session:
+                    if await service.export_cancelled(session, operation):
+                        return
+                reference = await ctx["export_store"].put(
+                    "generated_export",
+                    _export_bytes_stream(payload),
+                    media_type=writer.media_type,
+                    metadata={
+                        "format": operation.format_name,
+                        "validation_run_id": str(operation.validation_run_id),
+                    },
+                )
+                async with SessionFactory() as session:
+                    async with session.begin():
+                        completed = await service.complete_export(
+                            session,
+                            operation,
+                            storage_key=reference.key,
+                            media_type=reference.media_type,
+                            byte_size=reference.byte_size,
+                            checksum=reference.checksum,
+                            expires_at=reference.expires_at,
+                        )
+                if not completed:
+                    await ctx["export_store"].delete(reference)
+    except TimeoutError:
+        if reference is not None:
+            await ctx["export_store"].delete(reference)
+        error = ExportInfrastructureError("Export generation exceeded its configured time limit.")
+        error.retryable = False
+        async with SessionFactory() as session:
+            async with session.begin():
+                await service.fail_export(session, command, error, max_attempts=settings.export_max_retries)
+        return
+    except ExportError as error:
+        if reference is not None:
+            await ctx["export_store"].delete(reference)
+        async with SessionFactory() as session:
+            async with session.begin():
+                retry_attempt = await service.fail_export(
+                    session, command, error, max_attempts=settings.export_max_retries
+                )
+        if retry_attempt is not None:
+            raise Retry(defer=retry_delay_seconds(retry_attempt)) from error
+    except Exception as exc:
+        if reference is not None:
+            await ctx["export_store"].delete(reference)
+        error = ExportInfrastructureError("Export infrastructure failed safely.")
+        async with SessionFactory() as session:
+            async with session.begin():
+                retry_attempt = await service.fail_export(
+                    session, command, error, max_attempts=settings.export_max_retries
+                )
+        if retry_attempt is not None:
+            raise Retry(defer=retry_delay_seconds(retry_attempt)) from exc
+
+
 class WorkerSettings:
-    functions = [run_planning, run_browser_capture, run_discovery, run_extraction, run_validation]
+    functions = [run_planning, run_browser_capture, run_discovery, run_extraction, run_validation, run_export]
     cron_jobs = [cron(recover_abandoned_work, second={0, 15, 30, 45})]
     on_startup = startup
     redis_settings = redis_settings()

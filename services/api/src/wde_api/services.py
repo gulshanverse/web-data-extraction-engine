@@ -26,12 +26,17 @@ from wde_api.domain import (
     assert_transition,
     retry_delay_seconds,
 )
+from wde_api.export_errors import ExportError
+from wde_api.export_service import build_dataset, writer_for
+from wde_api.export_types import CanonicalExportDataset, ExportOptions
 from wde_api.extraction_errors import ExtractionError
 from wde_api.extraction_types import ExtractionResult
 from wde_api.models import (
     BrowserArtifact,
+    ExportJob,
     ExtractionJob,
     ExtractionPlan,
+    GeneratedFile,
     IdempotencyKey,
     Page,
     ProgressEvent,
@@ -117,6 +122,18 @@ class ValidationOperation:
     operation_key: str
     validation_run_id: uuid.UUID
     plan: CanonicalPlan
+
+
+@dataclass(frozen=True)
+class ExportOperation:
+    job_id: uuid.UUID
+    project_id: uuid.UUID
+    correlation_id: uuid.UUID
+    operation_key: str
+    export_job_id: uuid.UUID
+    validation_run_id: uuid.UUID
+    format_name: str
+    options: ExportOptions
 
 
 class JobService:
@@ -1469,15 +1486,274 @@ class JobService:
             {"stage": JobStatus.VALIDATING.value, **run.summary},
             operation.correlation_id,
         )
+        options = ExportOptions()
+        request_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "validation_run_id": str(run.id),
+                    "options": options.__dict__,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
         await self.transition(
             session,
             job_id=job.id,
             expected_state=JobStatus.VALIDATING,
-            target_state=JobStatus.READY_FOR_EXPORT,
-            reason="Validation results are durable; export remains a later phase.",
+            target_state=JobStatus.EXPORTING,
+            reason="Validation results are durable; requested export work is queued.",
             operation_key=operation.operation_key,
             correlation_id=operation.correlation_id,
         )
+        export_ids: list[str] = []
+        for format_name in job.output_formats:
+            writer_for(format_name)
+            export = ExportJob(
+                job_id=job.id,
+                validation_run_id=run.id,
+                format=format_name,
+                request_key=request_fingerprint,
+                options=options.__dict__,
+            )
+            session.add(export)
+            await session.flush()
+            operation_key = f"export:{export.id}:attempt:1"
+            session.add(
+                WorkOutbox(
+                    job_id=job.id,
+                    project_id=job.project_id,
+                    command_type="run_export",
+                    operation_key=operation_key,
+                    payload={
+                        "job_id": str(job.id),
+                        "project_id": str(job.project_id),
+                        "correlation_id": str(operation.correlation_id),
+                        "operation_key": operation_key,
+                        "export_job_id": str(export.id),
+                        "validation_run_id": str(run.id),
+                        "attempt": 1,
+                    },
+                )
+            )
+            export_ids.append(str(export.id))
+        await self._append_event(
+            session,
+            job,
+            "exports_queued",
+            {
+                "stage": JobStatus.EXPORTING.value,
+                "formats": list(job.output_formats),
+                "count": len(export_ids),
+            },
+            operation.correlation_id,
+        )
+
+    async def claim_export(
+        self, session: AsyncSession, command: dict[str, object], *, worker_id: str, lease_seconds: int
+    ) -> ExportOperation | None:
+        export_id = uuid.UUID(str(command["export_job_id"]))
+        job_id = uuid.UUID(str(command["job_id"]))
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        export = await session.scalar(select(ExportJob).where(ExportJob.id == export_id).with_for_update())
+        if job is None or export is None or export.job_id != job_id or export.status == "COMPLETED":
+            return None
+        if job.status == JobStatus.CANCELLED.value or job.cancel_requested_at:
+            export.status = "CANCELLED"
+            return None
+        if job.status != JobStatus.EXPORTING.value or export.status != "QUEUED":
+            return None
+        run = await session.get(ValidationRun, export.validation_run_id)
+        if run is None or run.status != "COMPLETED":
+            raise InvalidTransition("Export is missing completed validated data.")
+        export.status = "RUNNING"
+        export.attempt = max(export.attempt, int(command.get("attempt", 1)))
+        export.started_at = export.started_at or utcnow()
+        job.lease_owner = worker_id
+        job.lease_expires_at = utcnow() + timedelta(seconds=lease_seconds)
+        await self._append_event(
+            session,
+            job,
+            "export_started",
+            {"stage": JobStatus.EXPORTING.value, "format": export.format, "export_id": str(export.id)},
+            correlation_id,
+        )
+        return ExportOperation(
+            job.id,
+            job.project_id,
+            correlation_id,
+            str(command["operation_key"]),
+            export.id,
+            run.id,
+            export.format,
+            ExportOptions(**export.options),
+        )
+
+    async def load_export_dataset(
+        self, session: AsyncSession, operation: ExportOperation, *, max_records: int
+    ) -> CanonicalExportDataset:
+        plan_row = await session.scalar(
+            select(ExtractionPlan)
+            .where(ExtractionPlan.job_id == operation.job_id)
+            .order_by(ExtractionPlan.version.desc())
+            .limit(1)
+        )
+        if plan_row is None:
+            raise InvalidTransition("Export is missing the canonical plan.")
+        rows = (
+            await session.execute(
+                select(Record, ValidationResult)
+                .join(
+                    ValidationResult,
+                    (ValidationResult.record_id == Record.id)
+                    & (ValidationResult.validation_run_id == operation.validation_run_id),
+                )
+                .where(Record.job_id == operation.job_id)
+                .order_by(Record.record_identity, Record.id)
+            )
+        ).all()
+        records = [
+            {
+                "record_identity": record.record_identity or str(record.id),
+                "fields": dict(record.payload).get("fields", {}),
+                "validation_status": result.status,
+                "quality": result.quality,
+            }
+            for record, result in rows
+        ]
+        return build_dataset(
+            plan=CanonicalPlan.model_validate(plan_row.plan),
+            validation_run_id=str(operation.validation_run_id),
+            records=records,
+            options=operation.options,
+            max_records=max_records,
+        )
+
+    async def export_cancelled(self, session: AsyncSession, operation: ExportOperation) -> bool:
+        job = await session.get(ExtractionJob, operation.job_id)
+        return bool(job and (job.status == JobStatus.CANCELLED.value or job.cancel_requested_at))
+
+    async def complete_export(
+        self,
+        session: AsyncSession,
+        operation: ExportOperation,
+        *,
+        storage_key: str,
+        media_type: str,
+        byte_size: int,
+        checksum: str,
+        expires_at: datetime | None,
+    ) -> bool:
+        job = await session.scalar(
+            select(ExtractionJob).where(ExtractionJob.id == operation.job_id).with_for_update()
+        )
+        export = await session.scalar(
+            select(ExportJob).where(ExportJob.id == operation.export_job_id).with_for_update()
+        )
+        if (
+            job is None
+            or export is None
+            or job.status == JobStatus.CANCELLED.value
+            or job.cancel_requested_at
+        ):
+            return False
+        if job.status != JobStatus.EXPORTING.value or export.status == "COMPLETED":
+            return False
+        filename = f"validated-export-{str(operation.validation_run_id)[:8]}.{writer_for(export.format).extension.lstrip('.')}"
+        session.add(
+            GeneratedFile(
+                export_job_id=export.id,
+                filename=filename,
+                storage_key=storage_key,
+                media_type=media_type,
+                byte_size=byte_size,
+                checksum=checksum,
+                expires_at=expires_at,
+            )
+        )
+        export.status, export.completed_at, export.error_code, export.error_message = (
+            "COMPLETED",
+            utcnow(),
+            None,
+            None,
+        )
+        job.lease_owner = job.lease_expires_at = None
+        await self._append_event(
+            session,
+            job,
+            "export_completed",
+            {"stage": JobStatus.EXPORTING.value, "format": export.format, "export_id": str(export.id)},
+            operation.correlation_id,
+        )
+        statuses = list(await session.scalars(select(ExportJob.status).where(ExportJob.job_id == job.id)))
+        if statuses and all(status == "COMPLETED" for status in statuses):
+            job.progress_percent = 100
+            await self.transition(
+                session,
+                job_id=job.id,
+                expected_state=JobStatus.EXPORTING,
+                target_state=JobStatus.COMPLETED,
+                reason="All requested exports were persisted safely.",
+                operation_key=operation.operation_key,
+                correlation_id=operation.correlation_id,
+            )
+        return True
+
+    async def fail_export(
+        self,
+        session: AsyncSession,
+        command: dict[str, object],
+        error: ExportError,
+        *,
+        max_attempts: int,
+    ) -> int | None:
+        export_id = uuid.UUID(str(command["export_job_id"]))
+        job_id = uuid.UUID(str(command["job_id"]))
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        export = await session.scalar(select(ExportJob).where(ExportJob.id == export_id).with_for_update())
+        if job is None or export is None or job.status != JobStatus.EXPORTING.value:
+            return None
+        if job.cancel_requested_at or job.status == JobStatus.CANCELLED.value:
+            export.status = "CANCELLED"
+            return None
+        export.error_code, export.error_message = error.code, error.message
+        job.last_error_code, job.last_error_message, job.retryable = (
+            error.code,
+            error.message,
+            error.retryable,
+        )
+        job.lease_owner = job.lease_expires_at = None
+        if error.retryable and export.attempt < max_attempts:
+            export.attempt += 1
+            export.status = "QUEUED"
+            await self._append_event(
+                session,
+                job,
+                "export_retry_scheduled",
+                {"stage": JobStatus.EXPORTING.value, "format": export.format, "attempt": export.attempt},
+                correlation_id,
+            )
+            return export.attempt
+        export.status = "FAILED"
+        await self._append_event(
+            session,
+            job,
+            "export_failed",
+            {"stage": JobStatus.EXPORTING.value, "format": export.format, "code": error.code},
+            correlation_id,
+        )
+        await self.transition(
+            session,
+            job_id=job.id,
+            expected_state=JobStatus.EXPORTING,
+            target_state=JobStatus.FAILED,
+            reason=error.message,
+            operation_key=str(command["operation_key"]),
+            correlation_id=correlation_id,
+        )
+        return None
 
     async def fail_validation(
         self,
@@ -1847,7 +2123,53 @@ class JobService:
         self, session: AsyncSession, *, job_id: uuid.UUID, principal_id: uuid.UUID
     ) -> FilesResponse:
         await self.get_job(session, job_id, principal_id)
-        return FilesResponse(job_id=job_id, files=[])
+        rows = (
+            await session.execute(
+                select(GeneratedFile, ExportJob)
+                .join(ExportJob, GeneratedFile.export_job_id == ExportJob.id)
+                .where(ExportJob.job_id == job_id, ExportJob.status == "COMPLETED")
+                .order_by(GeneratedFile.created_at, GeneratedFile.id)
+            )
+        ).all()
+        from wde_api.schemas import FileMetadata
+
+        return FilesResponse(
+            job_id=job_id,
+            files=[
+                FileMetadata(
+                    file_id=file.id,
+                    format=export.format,
+                    filename=file.filename,
+                    media_type=file.media_type,
+                    byte_size=file.byte_size,
+                    checksum=file.checksum,
+                    download_url=f"/api/files/{file.id}/download",
+                    expires_at=file.expires_at,
+                )
+                for file, export in rows
+            ],
+        )
+
+    async def file_for_download(
+        self, session: AsyncSession, *, file_id: uuid.UUID, principal_id: uuid.UUID
+    ) -> tuple[GeneratedFile, ExportJob]:
+        row = await session.execute(
+            select(GeneratedFile, ExportJob)
+            .join(ExportJob, GeneratedFile.export_job_id == ExportJob.id)
+            .join(ExtractionJob, ExportJob.job_id == ExtractionJob.id)
+            .join(Project, ExtractionJob.project_id == Project.id)
+            .where(
+                GeneratedFile.id == file_id, Project.owner_id == principal_id, ExportJob.status == "COMPLETED"
+            )
+        )
+        result = row.first()
+        if result is None:
+            from wde_api.domain import DomainError
+
+            error = DomainError("The requested file was not found.")
+            error.code, error.status_code = "NOT_FOUND", 404
+            raise error
+        return result
 
     async def events_after(
         self, session: AsyncSession, *, job_id: uuid.UUID, after_sequence: int
@@ -1897,17 +2219,19 @@ class JobService:
                 if job.status == JobStatus.BROWSER_INITIALIZING.value
                 else "discovery"
                 if job.status == JobStatus.DISCOVERING.value
+                else "export"
+                if job.status == JobStatus.EXPORTING.value
                 else "planning"
             )
-            command_type = (
-                "run_browser_capture"
-                if phase == "browser"
-                else "run_discovery"
-                if phase == "discovery"
-                else "run_planning"
-            )
+            command_type = {
+                "browser": "run_browser_capture",
+                "discovery": "run_discovery",
+                "export": "run_export",
+                "planning": "run_planning",
+            }[phase]
             key = f"job:{job.id}:{phase}:{job.attempt}"
             page = None
+            export = None
             if phase == "discovery":
                 page = await session.scalar(
                     select(Page)
@@ -1921,6 +2245,18 @@ class JobService:
                 if page is None:
                     continue
                 page.status = InventoryStatus.DISCOVERED.value
+            if phase == "export":
+                export = await session.scalar(
+                    select(ExportJob)
+                    .where(ExportJob.job_id == job.id, ExportJob.status == "RUNNING")
+                    .order_by(ExportJob.created_at, ExportJob.id)
+                    .with_for_update(skip_locked=True)
+                )
+                if export is None:
+                    continue
+                export.status = "QUEUED"
+                export.attempt = max(export.attempt, job.attempt) + 1
+                key = f"export:{export.id}:attempt:{export.attempt}"
             session.add(
                 WorkOutbox(
                     job_id=job.id,
@@ -1936,6 +2272,14 @@ class JobService:
                         "operation_key": key,
                         "attempt": job.attempt,
                         **({"page_id": str(page.id)} if page is not None else {}),
+                        **(
+                            {
+                                "export_job_id": str(export.id),
+                                "validation_run_id": str(export.validation_run_id),
+                            }
+                            if export is not None
+                            else {}
+                        ),
                     },
                 )
             )

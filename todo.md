@@ -104,3 +104,12 @@
 - [x] Add document rendering, Unicode, long-text, layout, link, safety, storage, lifecycle, and regression tests.
 - [x] Document document profiles, format-specific behavior, metadata, provenance, limits, safety, testing, and Phase 11 boundary.
 - [x] Run final quality gates, commit, and push Phase 10 to `main`.
+
+## Phase 10R Durable Export Lifecycle Repair Checklist
+
+- [x] Verify the Phase 8/10 export-worker-storage-files lifecycle gap against actual code and the full corrective specification.
+- [x] Reuse the canonical validated dataset and existing export models to define one durable export command, request identity, status, and safe file metadata contract.
+- [x] Wire existing tabular and document writers into the existing outbox, worker, storage, generated-file persistence, authorization, and minimal Phase 9 results recognition paths.
+- [x] Add lifecycle, idempotency, cancellation, retry, storage, document, file authorization, API, worker, and frontend regression coverage.
+- [x] Reconcile export/document lifecycle documentation, configuration, test matrix, and Phase 11/12 boundaries.
+- [x] Run migrations and complete backend/frontend/security/boundary gates, then commit and push Phase 10R to `main`.

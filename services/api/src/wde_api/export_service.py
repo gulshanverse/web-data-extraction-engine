@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
+from wde_api.document_service import build_document, render_document
 from wde_api.export_errors import ExportTooLarge, ExportUnsupportedFormat
 from wde_api.export_types import EXPORT_SCHEMA_VERSION, CanonicalExportDataset, ExportFormat, ExportOptions
 from wde_api.planner_types import CanonicalPlan
@@ -18,7 +19,12 @@ from wde_api.storage import ArtifactRef, LocalArtifactStore
 _FORMULA_PREFIXES = ("=", "+", "-", "@")
 _MEDIA = {
     "csv": ("text/csv", ".csv"),
+    "docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"),
+    "html": ("text/html", ".html"),
     "json": ("application/json", ".json"),
+    "md": ("text/markdown", ".md"),
+    "pdf": ("application/pdf", ".pdf"),
+    "txt": ("text/plain", ".txt"),
     "xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"),
 }
 
@@ -109,8 +115,29 @@ class XlsxExporter:
         return output.getvalue()
 
 
+class DocumentExporter:
+    """Adapter that keeps document.v1 rendering behind the established export-writer port."""
+
+    def __init__(self, format_name: ExportFormat) -> None:
+        self.format = format_name
+        self.media_type, self.extension = _MEDIA[format_name]
+
+    def write(self, dataset: CanonicalExportDataset) -> bytes:
+        return render_document(build_document(dataset), self.format)
+
+
 WRITERS: dict[str, ExportWriter] = {
-    writer.format: writer for writer in (CsvExporter(), JsonExporter(), XlsxExporter())
+    writer.format: writer
+    for writer in (
+        CsvExporter(),
+        JsonExporter(),
+        XlsxExporter(),
+        DocumentExporter("pdf"),
+        DocumentExporter("docx"),
+        DocumentExporter("md"),
+        DocumentExporter("txt"),
+        DocumentExporter("html"),
+    )
 }
 
 
@@ -158,7 +185,12 @@ def writer_for(format_name: str) -> ExportWriter:
     try:
         return WRITERS[format_name]
     except KeyError as exc:
-        raise ExportUnsupportedFormat("Only xlsx, csv, and json exports are supported.") from exc
+        raise ExportUnsupportedFormat("The requested export format is not supported.") from exc
+
+
+def render_export(dataset: CanonicalExportDataset, format_name: str) -> bytes:
+    """Render one format from the existing canonical dataset without storage side effects."""
+    return writer_for(format_name).write(dataset)
 
 
 async def store_export(
@@ -170,7 +202,7 @@ async def store_export(
 ) -> ArtifactRef:
     """Write a fully-built bounded export through the existing storage port only."""
     writer = writer_for(format_name)
-    data = writer.write(dataset)
+    data = render_export(dataset, format_name)
 
     async def stream():
         yield data

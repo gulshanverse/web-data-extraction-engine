@@ -5,7 +5,6 @@ from __future__ import annotations
 import html
 import io
 import json
-from datetime import UTC, datetime
 from typing import Any
 
 from docx import Document
@@ -38,7 +37,6 @@ def build_document(
         {
             "schema_version": "document.v1",
             "record_count": len(dataset.rows),
-            "generated_at": datetime.now(UTC).isoformat(),
             "validation_run_id": dataset.validation_run_id,
             "plan_version": dataset.plan_version,
         },

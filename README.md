@@ -14,7 +14,7 @@ The planned direction uses a Next.js and TypeScript web client, a Python/FastAPI
 
 ## Project status
 
-**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, **Phase 3 — Playwright Engine**, **Phase 4 — AI Planner**, **Phase 5 — Discovery Engine**, **Phase 6 — Extraction Engine**, **Phase 7 — Validation Engine**, **Phase 8 — Excel / CSV / JSON Export Engine**, **Phase 9 — Progress + Results Experience**, and **Phase 10 — Document Formats** are complete. Phase 10 renders the existing canonical validated dataset as deterministic PDF, DOCX, Markdown, TXT, and safe HTML documents without revisiting websites or altering pipeline data.
+**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, **Phase 3 — Playwright Engine**, **Phase 4 — AI Planner**, **Phase 5 — Discovery Engine**, **Phase 6 — Extraction Engine**, **Phase 7 — Validation Engine**, **Phase 8 — Excel / CSV / JSON Export Engine**, **Phase 9 — Progress + Results Experience**, and **Phase 10 — Document Formats** are complete. **Phase 10R — Durable Export Lifecycle Repair** connects every supported tabular and document renderer to the existing outbox, worker, artifact storage, generated-file metadata, authorized files API, and minimal results recognition without revisiting websites or altering pipeline data.
 
 See the [Phase 0 architecture documentation](docs/architecture.md) for the system overview. Related contracts and decisions are documented in:
 
@@ -37,6 +37,7 @@ See the [Phase 0 architecture documentation](docs/architecture.md) for the syste
 - [Phase 8 export engine](docs/phase8-export.md)
 - [Phase 9 progress and results](docs/phase9-progress-results.md)
 - [Phase 10 document formats](docs/phase10-documents.md)
+- [Phase 10R durable export lifecycle repair](docs/phase10-export-lifecycle-repair.md)
 
 ## Local backend development
 
@@ -44,4 +45,4 @@ Copy `.env.example` to `.env`, then start PostgreSQL and Redis with `docker comp
 
 Run `pytest`, `ruff check services/api/src`, `ruff format --check services/api/src`, and `alembic -c services/api/alembic.ini current` before contributing. The optional `apps/web/lib/api-client.ts` is the Phase 1-compatible client seam; it does not replace the current mock UI flow.
 
-Development continues incrementally. **Phase 9 — Results UI and progress experience** is the recommended next phase. It must consume durable export metadata without changing export data policies.
+Development continues incrementally. The next action is the mandatory **Phase 11 preflight**; this repository has not started Phase 11 security hardening or Phase 12 deployment work.

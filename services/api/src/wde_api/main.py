@@ -32,6 +32,7 @@ from wde_api.schemas import (
     ResultsResponse,
 )
 from wde_api.services import JobService
+from wde_api.storage import ArtifactRef, LocalArtifactStore
 
 service, dispatcher = JobService(), OutboxDispatcher()
 log = structlog.get_logger()
@@ -220,6 +221,30 @@ async def job_files(
 ) -> FilesResponse:
     principal = await development_principal(request, session)
     return await service.files(session, job_id=job_id, principal_id=principal.id)
+
+
+@app.get("/api/files/{file_id}/download", responses={404: {"model": ErrorEnvelope}})
+async def download_file(
+    file_id: uuid.UUID, request: Request, session: AsyncSession = Depends(get_session)
+) -> StreamingResponse:
+    """Stream one authorized generated artifact; storage keys stay internal to the server."""
+    principal = await development_principal(request, session)
+    file, _ = await service.file_for_download(session, file_id=file_id, principal_id=principal.id)
+    reference = ArtifactRef(
+        key=file.storage_key,
+        artifact_type="generated_export",
+        media_type=file.media_type,
+        byte_size=file.byte_size,
+        checksum=file.checksum,
+        created_at=file.created_at,
+        expires_at=file.expires_at,
+    )
+    store = LocalArtifactStore(get_settings().artifact_root, max_bytes=get_settings().export_max_bytes)
+    return StreamingResponse(
+        store.open(reference),
+        media_type=file.media_type,
+        headers={"Content-Disposition": f'attachment; filename="{file.filename}"'},
+    )
 
 
 @app.get("/api/jobs/{job_id}/pages", response_model=PageInventoryResponse)

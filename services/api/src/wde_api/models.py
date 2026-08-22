@@ -282,10 +282,17 @@ class ExportJob(Base):
     job_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("extraction_jobs.id", ondelete="CASCADE"), nullable=False
     )
+    validation_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("validation_runs.id", ondelete="RESTRICT"), nullable=False
+    )
     format: Mapped[str] = mapped_column(String(20), nullable=False)
     request_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    options: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="QUEUED", nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(String(500))
+    attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = created_at()
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -300,6 +307,7 @@ class GeneratedFile(Base):
     export_job_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("export_jobs.id", ondelete="CASCADE"), nullable=False
     )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
     storage_key: Mapped[str] = mapped_column(String(512), nullable=False)
     media_type: Mapped[str] = mapped_column(String(200), nullable=False)
     byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)

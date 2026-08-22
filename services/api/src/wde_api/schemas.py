@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from wde_api.url_policy import validate_initial_url
 
-SUPPORTED_OUTPUT_FORMATS = {"xlsx", "csv", "json", "pdf", "docx", "md", "txt"}
+SUPPORTED_OUTPUT_FORMATS = {"xlsx", "csv", "json", "pdf", "docx", "md", "txt", "html"}
 
 
 class JobOptions(BaseModel):
@@ -152,6 +152,7 @@ class PageInventoryResponse(BaseModel):
 class FileMetadata(BaseModel):
     file_id: UUID
     format: str
+    filename: str
     media_type: str
     byte_size: int
     checksum: str

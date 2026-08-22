@@ -6,7 +6,7 @@ Phase 8 converts a **validated internal dataset** into deterministic CSV, JSON, 
 
 > The same canonical plan field order and selected validation-record policy feed every format writer; output differences are limited to format representation.
 
-Only `xlsx`, `csv`, and `json` are supported. PDF, DOCX, Markdown, TXT, HTML reports, presentation files, results UI work, and deployment are outside Phase 8.
+Phase 8 owns the canonical tabular dataset and tabular writers. Phase 10R connects the same dataset to the durable export lifecycle and supplies the document-format registry described in [Phase 10R](phase10-export-lifecycle-repair.md).
 
 ## Canonical dataset and policies
 
@@ -30,11 +30,11 @@ Null remains `null` in JSON and an empty field/cell in CSV/XLSX. Nested list or 
 
 Spreadsheet-cell values beginning (after leading whitespace) with `=`, `+`, `-`, or `@` receive a leading apostrophe in CSV/XLSX output. This protects common spreadsheet applications from unintended formula execution while retaining the original visible text. JSON remains structural data and is not altered by this spreadsheet-only policy.
 
-The existing `LocalArtifactStore` accepts the XLSX MIME type and the `store_export` helper writes an already-built export through that storage abstraction. Storage keys remain generated opaque keys; no caller supplies a filesystem path or filename.
+The existing `LocalArtifactStore` accepts the approved tabular and document MIME types. Storage keys remain generated opaque keys; no caller supplies a filesystem path or filename. Phase 10R persists generated-file metadata and exposes an authorized backend download route.
 
 ## Limits and limitations
 
-The canonical dataset builder accepts a server-owned record ceiling and fails safely when exceeded. Artifact storage applies its existing byte ceiling. The current baseline is deliberately small and deterministic: it does not yet create user-facing download routes, export UI, or later-phase document formats. Worker/API persistence integration uses the established `ExportJob` and artifact conventions in subsequent orchestration work; writer code itself remains pure and receives only canonical validated input.
+The canonical dataset builder accepts a server-owned record ceiling and fails safely when exceeded. Artifact storage applies the export byte ceiling. Writer code remains pure and receives only canonical validated input; Phase 10R supplies the durable worker, metadata persistence, authorization, retries, cancellation checks, and safe file retrieval.
 
 ## Testing
 

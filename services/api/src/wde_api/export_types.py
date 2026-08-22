@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-ExportFormat = Literal["xlsx", "csv", "json"]
+ExportFormat = Literal["xlsx", "csv", "json", "pdf", "docx", "md", "txt", "html"]
 RecordPolicy = Literal["ALL_RECORDS", "VALID_ONLY", "VALID_AND_WARNINGS"]
 EXPORT_SCHEMA_VERSION = "export.v1"
 

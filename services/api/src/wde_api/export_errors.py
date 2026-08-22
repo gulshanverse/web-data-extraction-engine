@@ -20,3 +20,8 @@ class ExportTooLarge(ExportError):
 
 class ExportSerializationError(ExportError):
     code = "EXPORT_SERIALIZATION_FAILED"
+
+
+class ExportInfrastructureError(ExportError):
+    code = "EXPORT_INFRASTRUCTURE_FAILED"
+    retryable = True

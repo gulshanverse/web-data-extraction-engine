@@ -34,7 +34,7 @@ The baseline uses standard renderer text flow for Unicode-capable strings and ve
 
 ## Storage and lifecycle
 
-The document renderers are pure byte renderers and use the existing `LocalArtifactStore` integration boundary from Phase 8 for persisted artifacts. They do not introduce another file store or expose filesystem paths. Durable export creation, authorization, idempotency, cancellation, and retry remain governed by the existing job/export contracts; render failures are deterministic failures and do not call a website or model.
+The document renderers are pure byte renderers and use the existing `LocalArtifactStore` integration boundary from Phase 8 for persisted artifacts. They do not introduce another file store or expose filesystem paths. Phase 10R wires document formats into the same durable export command, worker, `GeneratedFile`, authorization, cancellation, retry, and safe download lifecycle as CSV/JSON/XLSX; render failures are deterministic failures and do not call a website or model.
 
 ## Testing and limitations
 
@@ -44,4 +44,4 @@ The initial implementation does not add user templates, arbitrary style customiz
 
 ## Phase 11 boundary
 
-**Phase 11 — Security + Testing was not started.** Phase 10 contains only document-rendering safety required for its own deterministic formats; it does not claim broader platform hardening.
+**Phase 11 — Security + Testing was not started.** The Phase 10R repair is limited to durable export lifecycle controls required for deterministic formats; it does not claim broader platform hardening.

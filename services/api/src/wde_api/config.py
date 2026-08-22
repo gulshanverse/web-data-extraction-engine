@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     extraction_max_document_chars: int = Field(default=200_000, ge=1_024, le=2_000_000)
     extraction_max_document_items: int = Field(default=500, ge=1, le=5_000)
     extraction_max_retries: int = Field(default=2, ge=0, le=5)
+    export_max_records: int = Field(default=10_000, ge=1, le=100_000)
+    export_max_bytes: int = Field(default=25_165_824, ge=65_536, le=104_857_600)
+    export_timeout_seconds: float = Field(default=60.0, ge=1.0, le=300.0)
+    export_max_concurrency: int = Field(default=2, ge=1, le=8)
+    export_max_retries: int = Field(default=2, ge=0, le=5)
 
 
 @lru_cache
