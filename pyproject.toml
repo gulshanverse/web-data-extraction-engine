@@ -1,0 +1,15 @@
+[project]
+name = "web-data-extraction-engine"
+version = "0.1.0"
+description = "A modular web data extraction engine for accessible websites."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Gulshan Kumar" },
+]
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
