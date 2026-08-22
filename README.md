@@ -14,7 +14,7 @@ The planned direction uses a Next.js and TypeScript web client, a Python/FastAPI
 
 ## Project status
 
-**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, **Phase 3 — Playwright Engine**, **Phase 4 — AI Planner**, **Phase 5 — Discovery Engine**, **Phase 6 — Extraction Engine**, **Phase 7 — Validation Engine**, **Phase 8 — Excel / CSV / JSON Export Engine**, **Phase 9 — Progress + Results Experience**, and **Phase 10 — Document Formats** are complete. **Phase 10R — Durable Export Lifecycle Repair** connects every supported tabular and document renderer to the existing outbox, worker, artifact storage, generated-file metadata, authorized files API, and minimal results recognition without revisiting websites or altering pipeline data.
+**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, **Phase 3 — Playwright Engine**, **Phase 4 — AI Planner**, **Phase 5 — Discovery Engine**, **Phase 6 — Extraction Engine**, **Phase 7 — Validation Engine**, **Phase 8 — Excel / CSV / JSON Export Engine**, **Phase 9 — Progress + Results Experience**, and **Phase 10 — Document Formats** are complete. **Phase 9R — Real Results Projection Repair** replaces production sample result data with authorized durable records, validation outcomes, job-wide metrics, pagination, and generated-file metadata. **Phase 10R — Durable Export Lifecycle Repair** connects every supported tabular and document renderer to the existing outbox, worker, artifact storage, generated-file metadata, authorized files API, and minimal results recognition without revisiting websites or altering pipeline data.
 
 See the [Phase 0 architecture documentation](docs/architecture.md) for the system overview. Related contracts and decisions are documented in:
 
@@ -36,6 +36,7 @@ See the [Phase 0 architecture documentation](docs/architecture.md) for the syste
 - [Phase 7 validation engine](docs/phase7-validation.md)
 - [Phase 8 export engine](docs/phase8-export.md)
 - [Phase 9 progress and results](docs/phase9-progress-results.md)
+- [Phase 9R real results projection repair](docs/phase9-results-projection-repair.md)
 - [Phase 10 document formats](docs/phase10-documents.md)
 - [Phase 10R durable export lifecycle repair](docs/phase10-export-lifecycle-repair.md)
 
@@ -43,6 +44,6 @@ See the [Phase 0 architecture documentation](docs/architecture.md) for the syste
 
 Copy `.env.example` to `.env`, then start PostgreSQL and Redis with `docker compose up -d postgres redis` when Docker is available. Install Python dependencies with `uv pip install --system -e '.[dev]'`, then install Chromium with `python -m playwright install chromium`. Apply the reproducible schema with `DATABASE_URL=postgresql+asyncpg://wde:wde@localhost:5432/wde alembic -c services/api/alembic.ini upgrade head`. Run the API with `uvicorn wde_api.main:app --reload`, the worker with `python -m wde_api.worker`, and use `/docs`, `/openapi.json`, `/health`, and `/ready` to inspect the API.
 
-Run `pytest`, `ruff check services/api/src`, `ruff format --check services/api/src`, and `alembic -c services/api/alembic.ini current` before contributing. The optional `apps/web/lib/api-client.ts` is the Phase 1-compatible client seam; it does not replace the current mock UI flow.
+Run `pytest`, `ruff check services/api/src`, `ruff format --check services/api/src`, and `alembic -c services/api/alembic.ini current` before contributing. The typed `apps/web/lib/api-client.ts` client seam supplies the authenticated job, results, files, and SSE contracts used by the Phase 9 workspace.
 
 Development continues incrementally. The next action is the mandatory **Phase 11 preflight**; this repository has not started Phase 11 security hardening or Phase 12 deployment work.

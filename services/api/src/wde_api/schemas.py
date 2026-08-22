@@ -110,16 +110,33 @@ class CancelResponse(BaseModel):
     cancelled_at: datetime | None
 
 
+class ResultValidationProjection(BaseModel):
+    """Durable Phase 7 outcome for one record; absent means no completed validation run exists."""
+
+    status: str
+    quality: str | None = None
+    summary: dict[str, int] = Field(default_factory=dict)
+
+
+class ResultItemProjection(BaseModel):
+    record_id: UUID
+    record_identity: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+    validation: ResultValidationProjection | None = None
+    source_page_id: UUID | None = None
+
+
 class ResultsResponse(BaseModel):
     job_id: UUID
     plan_version: int | None = None
     schema_version: str = "records.v1"
-    items: list[dict[str, Any]] = Field(default_factory=list)
+    items: list[ResultItemProjection] = Field(default_factory=list)
     page: int = 1
     page_size: int = 100
     total: int = 0
+    validation_available: bool = False
     validation_summary: dict[str, int] = Field(
-        default_factory=lambda: {"passed": 0, "warnings": 0, "failed": 0}
+        default_factory=lambda: {"records": 0, "passed": 0, "warnings": 0, "failed": 0, "unresolved": 0}
     )
 
 

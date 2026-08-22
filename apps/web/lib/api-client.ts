@@ -1,8 +1,10 @@
 /** Data Loom Phase 9 typed API boundary. */
 export type JobStatus = "QUEUED" | "PLANNING" | "BROWSER_INITIALIZING" | "DISCOVERING" | "EXTRACTING" | "VALIDATING" | "READY_FOR_EXPORT" | "EXPORTING" | "COMPLETED" | "FAILED" | "CANCELLED";
 export type JobRequest = { project_id: string; source_url: string; task: string; fields: string[]; options: { max_pages: number; max_records: number; follow_pagination: boolean; follow_relevant_links: boolean; extract_images: boolean; deduplicate: boolean; validate: boolean }; output_formats: string[] };
-export type JobStatusResponse = { job_id: string; status: JobStatus; progress: { pages_processed: number; pages_found: number; records_found: number; progress_percent: number }; created_at: string; error?: { message: string; retryable: boolean } | null };
-export type ResultsResponse = { job_id: string; items: Record<string, unknown>[]; page: number; page_size: number; total: number; validation_summary: { passed: number; warnings: number; failed: number } };
+export type JobStatusResponse = { job_id: string; status: JobStatus; progress: { percent: number; pages_discovered: number; pages_processed: number; records_found: number; records_valid: number }; created_at: string; error?: { message: string; retryable: boolean } | null };
+export type ResultValidation = { status: "PASS" | "FAIL" | "WARN" | "UNRESOLVED" | "SKIPPED"; quality?: "HIGH" | "MEDIUM" | "LOW" | "INVALID" | "UNRESOLVED" | null; summary: Record<string, number> };
+export type ResultItem = { record_id: string; record_identity?: string | null; data: Record<string, unknown>; validation: ResultValidation | null; source_page_id?: string | null };
+export type ResultsResponse = { job_id: string; items: ResultItem[]; page: number; page_size: number; total: number; validation_available: boolean; validation_summary: { records: number; passed: number; warnings: number; failed: number; unresolved: number } };
 export type GeneratedFile = { file_id: string; format: string; filename: string; media_type: string; byte_size: number; checksum: string; download_url?: string; expires_at?: string | null };
 const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 async function request<T>(path: string, init?: RequestInit): Promise<T> { const response = await fetch(`${baseUrl}${path}`, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } }); if (!response.ok) throw await response.json(); return response.json() as Promise<T>; }

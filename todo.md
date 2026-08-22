@@ -113,3 +113,11 @@
 - [x] Add lifecycle, idempotency, cancellation, retry, storage, document, file authorization, API, worker, and frontend regression coverage.
 - [x] Reconcile export/document lifecycle documentation, configuration, test matrix, and Phase 11/12 boundaries.
 - [x] Run migrations and complete backend/frontend/security/boundary gates, then commit and push Phase 10R to `main`.
+
+## Phase 9R Real Results Projection Repair Checklist
+
+- [x] Verify the reported mock-results and hard-coded validation projection defect against actual Phase 6–10R code and baseline tests.
+- [x] Define the smallest compatible API projection for durable record values, validation outcomes, job-wide metrics, and pagination.
+- [x] Replace backend placeholder validation data and frontend sample result presentation with authorized real durable data while preserving Data Loom design.
+- [x] Add backend/frontend regressions for validation states, metrics, pagination, empty/error states, authorization, SSE completion refresh, and Phase 10R files.
+- [x] Run complete Phase 9R quality gates, update documentation, commit, and push the repair to `main`.

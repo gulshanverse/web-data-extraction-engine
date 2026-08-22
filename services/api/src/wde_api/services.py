@@ -57,7 +57,9 @@ from wde_api.schemas import (
     JobStatusResponse,
     PlanProjection,
     ProgressProjection,
+    ResultItemProjection,
     ResultsResponse,
+    ResultValidationProjection,
 )
 from wde_api.url_policy import validate_initial_url
 from wde_api.validation_errors import ValidationEngineError
@@ -2050,29 +2052,84 @@ class JobService:
             .order_by(ExtractionPlan.version.desc())
             .limit(1)
         )
-        records = (
-            await session.scalars(
-                select(Record).where(Record.job_id == job.id).offset((page - 1) * page_size).limit(page_size)
-            )
-        ).all()
+        validation_run = await session.scalar(
+            select(ValidationRun)
+            .where(ValidationRun.job_id == job.id, ValidationRun.status == "COMPLETED")
+            .order_by(ValidationRun.run_number.desc())
+            .limit(1)
+        )
+        records_query = (
+            select(Record)
+            .where(Record.job_id == job.id)
+            .order_by(Record.created_at, Record.id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        records = (await session.scalars(records_query)).all()
+        validations_by_record: dict[uuid.UUID, ValidationResult] = {}
+        if validation_run and records:
+            validations = (
+                await session.scalars(
+                    select(ValidationResult).where(
+                        ValidationResult.validation_run_id == validation_run.id,
+                        ValidationResult.record_id.in_([record.id for record in records]),
+                    )
+                )
+            ).all()
+            validations_by_record = {
+                validation.record_id: validation
+                for validation in validations
+                if validation.record_id is not None
+            }
         total = (
             await session.scalar(select(func.count()).select_from(Record).where(Record.job_id == job.id)) or 0
         )
+        summary = {"records": 0, "passed": 0, "warnings": 0, "failed": 0, "unresolved": 0}
+        if validation_run and isinstance(validation_run.summary, dict):
+            summary.update(
+                {
+                    key: int(value)
+                    for key, value in validation_run.summary.items()
+                    if key in summary and isinstance(value, int)
+                }
+            )
+
+        def normalized_values(record: Record) -> dict[str, object]:
+            payload = record.payload if isinstance(record.payload, dict) else {}
+            fields = payload.get("fields", {})
+            if not isinstance(fields, dict):
+                return {}
+            return {
+                str(name): value.get("value") if isinstance(value, dict) else None
+                for name, value in fields.items()
+            }
+
         return ResultsResponse(
             job_id=job.id,
             plan_version=plan.version if plan else None,
             items=[
-                {
-                    "record_id": item.id,
-                    "data": item.payload,
-                    "validation": "PENDING",
-                    "source_page_id": item.page_id,
-                }
+                ResultItemProjection(
+                    record_id=item.id,
+                    record_identity=item.record_identity,
+                    data=normalized_values(item),
+                    validation=(
+                        ResultValidationProjection(
+                            status=validation.status,
+                            quality=validation.quality,
+                            summary=validation.summary if isinstance(validation.summary, dict) else {},
+                        )
+                        if (validation := validations_by_record.get(item.id))
+                        else None
+                    ),
+                    source_page_id=item.page_id,
+                )
                 for item in records
             ],
             page=page,
             page_size=page_size,
             total=total,
+            validation_available=validation_run is not None,
+            validation_summary=summary,
         )
 
     async def pages(
