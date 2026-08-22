@@ -25,6 +25,10 @@ class BrowserOperationRequest:
     allowed_domain: str
     capture_screenshot: bool = True
     full_page_screenshot: bool = False
+    include_navigation_signals: bool = False
+    navigation_signal_limit: int = 0
+    include_document_text: bool = False
+    document_text_limit: int = 0
 
 
 @dataclass(frozen=True)
@@ -46,10 +50,20 @@ class BrowserArtifactResult:
 
 
 @dataclass(frozen=True)
+class NavigationSignalResult:
+    href: str
+    text: str
+    rel: str
+    aria_label: str
+
+
+@dataclass(frozen=True)
 class BrowserOperationResult:
     navigation: NavigationMetadata
     artifacts: tuple[BrowserArtifactResult, ...] = ()
     events: tuple[dict[str, object], ...] = ()
+    navigation_signals: tuple[NavigationSignalResult, ...] = ()
+    document_text: str | None = None
 
 
 class BrowserEngine(Protocol):

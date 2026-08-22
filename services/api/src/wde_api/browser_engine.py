@@ -31,6 +31,7 @@ from wde_api.browser_types import (
     BrowserOperationResult,
     BrowserPolicy,
     NavigationMetadata,
+    NavigationSignalResult,
     PolicyDecision,
 )
 from wde_api.config import Settings
@@ -218,11 +219,27 @@ class PlaywrightBrowserEngine(BrowserEngine):
                     )
                     lifecycle_events.append({"type": "navigation_completed", "url": metadata.final_url})
                     artifacts: list[BrowserArtifactResult] = []
+                    navigation_signals: tuple[NavigationSignalResult, ...] = ()
+                    document_text: str | None = None
+                    if request.include_navigation_signals:
+                        navigation_signals = await self._navigation_signals(
+                            page, max(1, request.navigation_signal_limit)
+                        )
+                        lifecycle_events.append({"type": "navigation_signals_collected"})
+                    if request.include_document_text:
+                        document_text = await self._document_text(page, max(1, request.document_text_limit))
+                        lifecycle_events.append({"type": "navigation_document_collected"})
                     if request.capture_screenshot:
                         artifacts.append(await self._screenshot(page, request.full_page_screenshot))
                     if download_tasks:
                         artifacts.extend(await asyncio.gather(*download_tasks))
-                    return BrowserOperationResult(metadata, tuple(artifacts), tuple(lifecycle_events))
+                    return BrowserOperationResult(
+                        metadata,
+                        tuple(artifacts),
+                        tuple(lifecycle_events),
+                        navigation_signals,
+                        document_text,
+                    )
         except TimeoutError as error:
             raise BrowserTimeout("The browser operation exceeded its configured lifetime.") from error
         finally:
@@ -274,6 +291,48 @@ class PlaywrightBrowserEngine(BrowserEngine):
             "browser_screenshot", bytes_stream(image), media_type="image/png", metadata={}
         )
         return BrowserArtifactResult("full_page_screenshot" if full_page else "viewport_screenshot", ref)
+
+    async def _navigation_signals(self, page: Page, limit: int) -> tuple[NavigationSignalResult, ...]:
+        """Collect bounded anchor metadata only; this does not extract business records or persist HTML."""
+        try:
+            raw = await asyncio.wait_for(
+                page.locator("a[href]").evaluate_all(
+                    """(nodes, limit) => nodes.slice(0, limit).map(node => ({
+                        href: node.href || node.getAttribute('href') || '',
+                        text: (node.innerText || '').slice(0, 240),
+                        rel: node.getAttribute('rel') || '',
+                        aria_label: node.getAttribute('aria-label') || ''
+                    }))""",
+                    limit,
+                ),
+                timeout=self.settings.browser_action_timeout_ms / 1000,
+            )
+        except PlaywrightTimeoutError as error:
+            raise BrowserTimeout("Navigation signal collection exceeded its configured timeout.") from error
+        except PlaywrightError as error:
+            raise NavigationFailed("Navigation signals could not be read safely.") from error
+        return tuple(
+            NavigationSignalResult(
+                href=str(item.get("href", ""))[:2048],
+                text=" ".join(str(item.get("text", "")).split())[:240],
+                rel=" ".join(str(item.get("rel", "")).split())[:120],
+                aria_label=" ".join(str(item.get("aria_label", "")).split())[:240],
+            )
+            for item in raw
+            if isinstance(item, dict) and item.get("href")
+        )
+
+    async def _document_text(self, page: Page, limit: int) -> str:
+        """Read bounded transient text for policy-checked sitemap parsing; never persist page content."""
+        try:
+            text = await asyncio.wait_for(
+                page.locator("body").inner_text(), timeout=self.settings.browser_action_timeout_ms / 1000
+            )
+        except PlaywrightTimeoutError as error:
+            raise BrowserTimeout("Navigation document collection exceeded its configured timeout.") from error
+        except PlaywrightError as error:
+            raise NavigationFailed("Navigation document text could not be read safely.") from error
+        return text[:limit]
 
     async def _store_download(self, download: Download) -> BrowserArtifactResult:
         path = await download.path()

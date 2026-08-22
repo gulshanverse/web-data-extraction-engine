@@ -51,6 +51,16 @@ class Settings(BaseSettings):
     planner_max_records: int = Field(default=10_000, ge=1, le=100_000)
     planner_max_fields: int = Field(default=64, ge=1, le=128)
     planner_max_outputs: int = Field(default=7, ge=1, le=7)
+    discovery_max_pages: int = Field(default=100, ge=1, le=1_000)
+    discovery_max_depth: int = Field(default=2, ge=0, le=10)
+    discovery_max_links_per_page: int = Field(default=200, ge=1, le=2_000)
+    discovery_max_concurrency: int = Field(default=1, ge=1, le=8)
+    discovery_min_delay_seconds: float = Field(default=0.0, ge=0.0, le=10.0)
+    discovery_scope_policy: str = "SAME_ORIGIN"
+    discovery_enable_sitemaps: bool = False
+    discovery_sitemap_max_bytes: int = Field(default=1_048_576, ge=1_024, le=10_485_760)
+    discovery_sitemap_max_urls: int = Field(default=500, ge=1, le=10_000)
+    discovery_sitemap_max_depth: int = Field(default=1, ge=0, le=5)
 
 
 @lru_cache

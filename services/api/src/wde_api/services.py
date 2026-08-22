@@ -15,6 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from wde_api.auth import NotAuthorized
 from wde_api.browser_errors import BrowserCancelled, BrowserEngineError
 from wde_api.browser_types import BrowserOperationRequest, BrowserOperationResult
+from wde_api.discovery_errors import DiscoveryError
+from wde_api.discovery_service import DiscoveryService
+from wde_api.discovery_types import DiscoveryCandidate, DiscoveryMethod, InventoryStatus, NavigationSignal
 from wde_api.domain import (
     ACTIVE_STATES,
     EVENT_FOR_TRANSITION,
@@ -70,6 +73,21 @@ class PlanningOperation:
     requested_fields: list[str]
     options: dict[str, object]
     output_formats: list[str]
+
+
+@dataclass(frozen=True)
+class DiscoveryOperation:
+    job_id: uuid.UUID
+    project_id: uuid.UUID
+    correlation_id: uuid.UUID
+    operation_key: str
+    page_id: uuid.UUID
+    page_url: str
+    page_canonical_url: str
+    page_depth: int
+    page_method: str | None
+    source_domain: str
+    plan: CanonicalPlan
 
 
 class JobService:
@@ -544,6 +562,385 @@ class JobService:
             capture_screenshot=True,
         )
 
+    async def claim_discovery(
+        self, session: AsyncSession, command: dict[str, object], *, worker_id: str, lease_seconds: int
+    ) -> DiscoveryOperation | None:
+        """Claim one durable inventory page. Discovery owns URL inventory, never record creation."""
+        job_id = uuid.UUID(str(command["job_id"]))
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        if job is None or job.status in {JobStatus.CANCELLED.value, JobStatus.FAILED.value}:
+            return None
+        if job.status != JobStatus.DISCOVERING.value:
+            raise InvalidTransition("Discovery command cannot claim the current job state.")
+        if job.cancel_requested_at:
+            await self.transition(
+                session,
+                job_id=job.id,
+                expected_state=JobStatus.DISCOVERING,
+                target_state=JobStatus.CANCELLED,
+                reason="Cancellation acknowledged before discovery.",
+                operation_key=str(command["operation_key"]),
+                correlation_id=correlation_id,
+            )
+            return None
+        requested_page_id = command.get("page_id")
+        query = select(Page).where(Page.job_id == job.id, Page.status == InventoryStatus.DISCOVERED.value)
+        if requested_page_id:
+            query = query.where(Page.id == uuid.UUID(str(requested_page_id)))
+        page = await session.scalar(
+            query.order_by(Page.depth, Page.discovered_at, Page.id).with_for_update(skip_locked=True)
+        )
+        if page is None:
+            return None
+        plan_row = await session.scalar(
+            select(ExtractionPlan)
+            .where(ExtractionPlan.job_id == job.id)
+            .order_by(ExtractionPlan.version.desc())
+            .limit(1)
+        )
+        source = await session.get(Source, job.source_id)
+        if plan_row is None or source is None:
+            raise InvalidTransition("Discovery work is missing a validated plan or source metadata.")
+        plan = CanonicalPlan.model_validate(plan_row.plan)
+        page.status = InventoryStatus.QUEUED.value
+        job.lease_owner = worker_id
+        job.lease_expires_at = utcnow() + timedelta(seconds=lease_seconds)
+        await self._append_event(
+            session,
+            job,
+            "page_queued",
+            {"stage": JobStatus.DISCOVERING.value, "page_id": str(page.id), "depth": page.depth},
+            correlation_id,
+        )
+        return DiscoveryOperation(
+            job_id=job.id,
+            project_id=job.project_id,
+            correlation_id=correlation_id,
+            operation_key=str(command["operation_key"]),
+            page_id=page.id,
+            page_url=page.canonical_url,
+            page_canonical_url=page.canonical_url,
+            page_depth=page.depth,
+            page_method=page.discovered_via,
+            source_domain=source.domain,
+            plan=plan,
+        )
+
+    async def complete_discovery_page(
+        self,
+        session: AsyncSession,
+        command: dict[str, object],
+        operation: DiscoveryOperation,
+        result: BrowserOperationResult,
+        *,
+        discovery: DiscoveryService,
+    ) -> None:
+        job = await session.scalar(
+            select(ExtractionJob).where(ExtractionJob.id == operation.job_id).with_for_update()
+        )
+        if job is None or job.status in {JobStatus.CANCELLED.value, JobStatus.FAILED.value}:
+            return
+        if job.status != JobStatus.DISCOVERING.value:
+            raise InvalidTransition("Discovery completion cannot update the current job state.")
+        if job.cancel_requested_at:
+            await self.transition(
+                session,
+                job_id=job.id,
+                expected_state=JobStatus.DISCOVERING,
+                target_state=JobStatus.CANCELLED,
+                reason="Cancellation acknowledged after discovery navigation.",
+                operation_key=operation.operation_key,
+                correlation_id=operation.correlation_id,
+            )
+            return
+        page = await session.scalar(select(Page).where(Page.id == operation.page_id).with_for_update())
+        if page is None:
+            raise InvalidTransition("Discovery completion is missing its inventory page.")
+        page.status = InventoryStatus.VISITED.value
+        page.final_url = result.navigation.final_url
+        page.http_status = result.navigation.status
+        page.content_type = result.navigation.content_type
+        page.title = result.navigation.title
+        page.navigation_time_ms = result.navigation.navigation_time_ms
+        page.redirect_count = result.navigation.redirect_count
+        page.visited_at = utcnow()
+        page.discovery_metadata = {"signal_count": len(result.navigation_signals)}
+        job.pages_processed += 1
+        await self._append_event(
+            session,
+            job,
+            "page_visited",
+            {"stage": JobStatus.DISCOVERING.value, "page_id": str(page.id), "depth": page.depth},
+            operation.correlation_id,
+        )
+        seen = set((await session.scalars(select(Page.canonical_url).where(Page.job_id == job.id))).all())
+        signals = tuple(
+            NavigationSignal(signal.href, signal.text, signal.rel, signal.aria_label)
+            for signal in result.navigation_signals
+        )
+        decision = discovery.from_signals(
+            plan=operation.plan,
+            parent_url=result.navigation.final_url,
+            parent_canonical_url=page.canonical_url,
+            parent_depth=page.depth,
+            signals=signals,
+            seen_urls=seen,
+        )
+        if page.discovered_via == DiscoveryMethod.SITEMAP.value and result.document_text:
+            sitemap = discovery.sitemap_candidates(
+                plan=operation.plan,
+                sitemap_text=result.document_text,
+                parent_canonical_url=page.canonical_url,
+                parent_depth=page.depth,
+                seen_urls=seen,
+            )
+            decision = type(decision)(
+                candidates=decision.candidates + sitemap.candidates,
+                rejected=decision.rejected + sitemap.rejected,
+                duplicate_count=decision.duplicate_count + sitemap.duplicate_count,
+            )
+        await self._persist_discovery_candidates(
+            session, job, operation, page, decision.candidates, False, discovery
+        )
+        await self._persist_discovery_candidates(
+            session, job, operation, page, decision.rejected, True, discovery
+        )
+        if decision.duplicate_count:
+            await self._append_event(
+                session,
+                job,
+                "page_duplicate",
+                {"stage": JobStatus.DISCOVERING.value, "count": decision.duplicate_count},
+                operation.correlation_id,
+            )
+        if self._should_enqueue_sitemap(discovery, operation, page, seen):
+            sitemap_url = discovery.default_sitemap_url(operation.plan.source.url)
+            if sitemap_url:
+                candidate = DiscoveryCandidate(
+                    url=sitemap_url,
+                    canonical_url=sitemap_url,
+                    discovered_via=DiscoveryMethod.SITEMAP,
+                    depth=1,
+                    parent_canonical_url=page.canonical_url,
+                    policy_decision="ALLOWED",
+                    relevance_reason="configured sitemap probe",
+                )
+                await self._persist_discovery_candidates(
+                    session, job, operation, page, (candidate,), False, discovery
+                )
+        job.lease_owner = None
+        job.lease_expires_at = None
+        next_page = await session.scalar(
+            select(Page)
+            .where(Page.job_id == job.id, Page.status == InventoryStatus.DISCOVERED.value)
+            .order_by(Page.depth, Page.discovered_at, Page.id)
+            .limit(1)
+        )
+        if next_page is None:
+            job.progress_percent = max(job.progress_percent, 40)
+            await self._append_event(
+                session,
+                job,
+                "discovery_completed",
+                {"stage": JobStatus.DISCOVERING.value, "pages_discovered": job.pages_discovered},
+                operation.correlation_id,
+            )
+            return
+        self._queue_discovery_page(session, job, next_page, operation.correlation_id)
+
+    async def _persist_discovery_candidates(
+        self,
+        session: AsyncSession,
+        job: ExtractionJob,
+        operation: DiscoveryOperation,
+        parent: Page,
+        candidates: tuple[DiscoveryCandidate, ...],
+        rejected: bool,
+        discovery: DiscoveryService,
+    ) -> None:
+        accepted = await session.scalar(
+            select(func.count())
+            .select_from(Page)
+            .where(
+                Page.job_id == job.id,
+                Page.status.not_in([InventoryStatus.REJECTED.value, InventoryStatus.DUPLICATE.value]),
+            )
+        )
+        accepted_count = int(accepted or 0)
+        for candidate in candidates:
+            existing = await session.scalar(
+                select(Page).where(Page.job_id == job.id, Page.canonical_url == candidate.canonical_url)
+            )
+            if existing:
+                await self._append_event(
+                    session,
+                    job,
+                    "page_duplicate",
+                    {"stage": JobStatus.DISCOVERING.value, "url": candidate.canonical_url},
+                    operation.correlation_id,
+                )
+                continue
+            status = InventoryStatus.REJECTED.value if rejected else InventoryStatus.DISCOVERED.value
+            if not rejected and accepted_count >= min(
+                discovery.settings.discovery_max_pages, operation.plan.limits.max_pages
+            ):
+                status = InventoryStatus.SKIPPED.value
+            candidate_page = Page(
+                job_id=job.id,
+                url=candidate.url,
+                canonical_url=candidate.canonical_url,
+                status=status,
+                discovered_at=utcnow(),
+                discovered_via=candidate.discovered_via.value,
+                depth=candidate.depth,
+                parent_page_id=parent.id,
+                deduplication_key=hashlib.sha256(candidate.canonical_url.encode()).hexdigest(),
+                policy_decision=candidate.policy_decision,
+                relevance_score=candidate.relevance_score,
+                relevance_reason=candidate.relevance_reason,
+            )
+            session.add(candidate_page)
+            if status == InventoryStatus.DISCOVERED.value:
+                accepted_count += 1
+                job.pages_discovered += 1
+                await self._append_event(
+                    session,
+                    job,
+                    "pagination_detected"
+                    if candidate.discovered_via == DiscoveryMethod.PAGINATION
+                    else "page_discovered",
+                    {
+                        "stage": JobStatus.DISCOVERING.value,
+                        "url": candidate.canonical_url,
+                        "depth": candidate.depth,
+                        "method": candidate.discovered_via.value,
+                    },
+                    operation.correlation_id,
+                )
+            elif status == InventoryStatus.REJECTED.value:
+                await self._append_event(
+                    session,
+                    job,
+                    "page_rejected",
+                    {
+                        "stage": JobStatus.DISCOVERING.value,
+                        "url": candidate.canonical_url,
+                        "reason": candidate.policy_decision,
+                    },
+                    operation.correlation_id,
+                )
+            else:
+                await self._append_event(
+                    session,
+                    job,
+                    "page_rejected",
+                    {"stage": JobStatus.DISCOVERING.value, "reason": "DISCOVERY_LIMIT_REACHED"},
+                    operation.correlation_id,
+                )
+
+    @staticmethod
+    def _should_enqueue_sitemap(
+        discovery: DiscoveryService, operation: DiscoveryOperation, page: Page, seen: set[str]
+    ) -> bool:
+        sitemap_url = discovery.default_sitemap_url(operation.plan.source.url)
+        return bool(
+            discovery.settings.discovery_enable_sitemaps
+            and page.depth == 0
+            and sitemap_url
+            and sitemap_url not in seen
+        )
+
+    @staticmethod
+    def _queue_discovery_page(
+        session: AsyncSession, job: ExtractionJob, page: Page, correlation_id: uuid.UUID
+    ) -> None:
+        key = f"job:{job.id}:discovery:page:{page.id}:1"
+        session.add(
+            WorkOutbox(
+                job_id=job.id,
+                project_id=job.project_id,
+                command_type="run_discovery",
+                operation_key=key,
+                payload={
+                    "job_id": str(job.id),
+                    "project_id": str(job.project_id),
+                    "correlation_id": str(correlation_id),
+                    "operation_key": key,
+                    "page_id": str(page.id),
+                    "attempt": 1,
+                },
+            )
+        )
+
+    async def fail_discovery(
+        self, session: AsyncSession, command: dict[str, object], error: DiscoveryError, *, max_attempts: int
+    ) -> int | None:
+        """Persist a stable discovery failure; retries retain the inventory entry and never create a record."""
+        job_id = uuid.UUID(str(command["job_id"]))
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        if job is None or job.status in {JobStatus.CANCELLED.value, JobStatus.FAILED.value}:
+            return None
+        if job.status != JobStatus.DISCOVERING.value:
+            return None
+        page_id = command.get("page_id")
+        page = (
+            await session.scalar(select(Page).where(Page.id == uuid.UUID(str(page_id))).with_for_update())
+            if page_id
+            else None
+        )
+        if job.cancel_requested_at:
+            if page is not None:
+                page.status = InventoryStatus.SKIPPED.value
+            await self.transition(
+                session,
+                job_id=job.id,
+                expected_state=JobStatus.DISCOVERING,
+                target_state=JobStatus.CANCELLED,
+                reason="Discovery operation cancelled safely.",
+                operation_key=str(command["operation_key"]),
+                correlation_id=correlation_id,
+            )
+            return None
+        if page is not None:
+            page.status = InventoryStatus.FAILED.value
+        job.last_error_code = error.code
+        job.last_error_message = error.message
+        job.retryable = error.retryable
+        job.lease_owner = None
+        job.lease_expires_at = None
+        if error.retryable:
+            job.attempt += 1
+            if job.attempt <= max_attempts:
+                if page is not None:
+                    page.status = InventoryStatus.DISCOVERED.value
+                await self._append_event(
+                    session,
+                    job,
+                    "discovery_retry_scheduled",
+                    {"stage": JobStatus.DISCOVERING.value, "attempt": job.attempt, "page_id": str(page_id)},
+                    correlation_id,
+                )
+                return job.attempt
+        await self._append_event(
+            session,
+            job,
+            "discovery_failed",
+            {"stage": JobStatus.DISCOVERING.value, "code": error.code, "page_id": str(page_id)},
+            correlation_id,
+        )
+        await self.transition(
+            session,
+            job_id=job.id,
+            expected_state=JobStatus.DISCOVERING,
+            target_state=JobStatus.FAILED,
+            reason=error.message,
+            operation_key=str(command["operation_key"]),
+            correlation_id=correlation_id,
+        )
+        return None
+
     async def complete_browser_capture(
         self, session: AsyncSession, command: dict[str, object], result: BrowserOperationResult
     ) -> None:
@@ -580,7 +977,7 @@ class JobService:
             )
             session.add(page)
             await session.flush()
-        page.status = "CAPTURED"
+        page.status = InventoryStatus.DISCOVERED.value
         page.final_url = navigation.final_url
         page.http_status = navigation.status
         page.content_type = navigation.content_type
@@ -590,6 +987,12 @@ class JobService:
         page.redirect_count = navigation.redirect_count
         page.browser_metadata = {"phase": 3, "event_count": len(result.events)}
         page.captured_at = utcnow()
+        page.discovered_at = page.discovered_at or utcnow()
+        page.discovered_via = DiscoveryMethod.SOURCE.value
+        page.depth = 0
+        page.policy_decision = "ALLOWED"
+        page.deduplication_key = hashlib.sha256(page.canonical_url.encode()).hexdigest()
+        job.pages_discovered = max(job.pages_discovered, 1)
         job.pages_processed = max(job.pages_processed, 1)
         for browser_artifact in result.artifacts:
             ref = browser_artifact.artifact
@@ -623,6 +1026,33 @@ class JobService:
                 "page_id": str(page.id),
             },
             correlation_id,
+        )
+        job.progress_percent = max(job.progress_percent, 30)
+        await self.transition(
+            session,
+            job_id=job.id,
+            expected_state=JobStatus.BROWSER_INITIALIZING,
+            target_state=JobStatus.DISCOVERING,
+            reason="Browser capture completed; discovery inventory is ready to begin.",
+            operation_key=str(command["operation_key"]),
+            correlation_id=correlation_id,
+        )
+        discovery_key = f"job:{job.id}:discovery:source:1"
+        session.add(
+            WorkOutbox(
+                job_id=job.id,
+                project_id=job.project_id,
+                command_type="run_discovery",
+                operation_key=discovery_key,
+                payload={
+                    "job_id": str(job.id),
+                    "project_id": str(job.project_id),
+                    "correlation_id": str(correlation_id),
+                    "operation_key": discovery_key,
+                    "page_id": str(page.id),
+                    "attempt": 1,
+                },
+            )
         )
         job.lease_owner = None
         job.lease_expires_at = None
@@ -783,6 +1213,50 @@ class JobService:
             total=total,
         )
 
+    async def pages(
+        self, session: AsyncSession, *, job_id: uuid.UUID, principal_id: uuid.UUID, page: int, page_size: int
+    ):
+        """Return safe inventory metadata only; discovery does not expose page body content or worker commands."""
+        from wde_api.schemas import PageInventoryItem, PageInventoryResponse
+
+        job = await self.get_job(session, job_id, principal_id)
+        items = (
+            await session.scalars(
+                select(Page)
+                .where(Page.job_id == job.id)
+                .order_by(Page.depth, Page.discovered_at, Page.id)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).all()
+        total = await session.scalar(select(func.count()).select_from(Page).where(Page.job_id == job.id)) or 0
+        return PageInventoryResponse(
+            job_id=job.id,
+            items=[
+                PageInventoryItem(
+                    page_id=item.id,
+                    url=item.url,
+                    canonical_url=item.canonical_url,
+                    status=item.status,
+                    discovered_via=item.discovered_via,
+                    depth=item.depth,
+                    parent_page_id=item.parent_page_id,
+                    discovered_at=item.discovered_at,
+                    visited_at=item.visited_at,
+                    http_status=item.http_status,
+                    content_type=item.content_type,
+                    title=item.title,
+                    policy_decision=item.policy_decision,
+                    relevance_score=item.relevance_score,
+                    relevance_reason=item.relevance_reason,
+                )
+                for item in items
+            ],
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
     async def files(
         self, session: AsyncSession, *, job_id: uuid.UUID, principal_id: uuid.UUID
     ) -> FilesResponse:
@@ -832,9 +1306,35 @@ class JobService:
                     job.correlation_id,
                 )
                 continue
-            phase = "browser" if job.status == JobStatus.BROWSER_INITIALIZING.value else "planning"
-            command_type = "run_browser_capture" if phase == "browser" else "run_planning"
+            phase = (
+                "browser"
+                if job.status == JobStatus.BROWSER_INITIALIZING.value
+                else "discovery"
+                if job.status == JobStatus.DISCOVERING.value
+                else "planning"
+            )
+            command_type = (
+                "run_browser_capture"
+                if phase == "browser"
+                else "run_discovery"
+                if phase == "discovery"
+                else "run_planning"
+            )
             key = f"job:{job.id}:{phase}:{job.attempt}"
+            page = None
+            if phase == "discovery":
+                page = await session.scalar(
+                    select(Page)
+                    .where(
+                        Page.job_id == job.id,
+                        Page.status.in_([InventoryStatus.QUEUED.value, InventoryStatus.DISCOVERED.value]),
+                    )
+                    .order_by(Page.depth, Page.discovered_at, Page.id)
+                    .with_for_update(skip_locked=True)
+                )
+                if page is None:
+                    continue
+                page.status = InventoryStatus.DISCOVERED.value
             session.add(
                 WorkOutbox(
                     job_id=job.id,
@@ -849,6 +1349,7 @@ class JobService:
                         "correlation_id": str(job.correlation_id),
                         "operation_key": key,
                         "attempt": job.attempt,
+                        **({"page_id": str(page.id)} if page is not None else {}),
                     },
                 )
             )

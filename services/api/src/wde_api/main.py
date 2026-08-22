@@ -28,6 +28,7 @@ from wde_api.schemas import (
     JobAccepted,
     JobCreateRequest,
     JobStatusResponse,
+    PageInventoryResponse,
     ResultsResponse,
 )
 from wde_api.services import JobService
@@ -219,6 +220,24 @@ async def job_files(
 ) -> FilesResponse:
     principal = await development_principal(request, session)
     return await service.files(session, job_id=job_id, principal_id=principal.id)
+
+
+@app.get("/api/jobs/{job_id}/pages", response_model=PageInventoryResponse)
+async def job_pages(
+    job_id: uuid.UUID,
+    request: Request,
+    page: int = 1,
+    page_size: int = 100,
+    session: AsyncSession = Depends(get_session),
+) -> PageInventoryResponse:
+    principal = await development_principal(request, session)
+    return await service.pages(
+        session,
+        job_id=job_id,
+        principal_id=principal.id,
+        page=max(1, page),
+        page_size=min(max(1, page_size), 100),
+    )
 
 
 @app.get("/api/jobs/{job_id}/events")

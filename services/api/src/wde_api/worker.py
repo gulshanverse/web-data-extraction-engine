@@ -9,10 +9,20 @@ from arq import Retry
 from arq.cron import cron
 
 from wde_api.browser_engine import PlaywrightBrowserEngine
-from wde_api.browser_errors import BrowserEngineError
+from wde_api.browser_errors import BrowserCancelled, BrowserEngineError
 from wde_api.browser_policy import DefaultBrowserPolicy
 from wde_api.browser_types import BrowserOperationRequest
 from wde_api.database import SessionFactory
+from wde_api.discovery_errors import (
+    DiscoveryBrowserFailed,
+    DiscoveryCancelled,
+    DiscoveryError,
+    DiscoveryNavigationFailed,
+    DiscoveryPolicyBlocked,
+    DiscoveryTimeout,
+)
+from wde_api.discovery_service import DiscoveryService
+from wde_api.discovery_types import DiscoveryMethod
 from wde_api.domain import retry_delay_seconds
 from wde_api.logging import configure_logging
 from wde_api.planner_errors import PlannerError, PlannerUnavailable
@@ -49,6 +59,7 @@ async def startup(_: dict) -> None:
 
     _["browser_engine"] = PlaywrightBrowserEngine.from_settings(settings, policy_factory)
     _["planner_service"] = PlannerService(build_planner_model(settings), settings)
+    _["discovery_service"] = DiscoveryService(settings)
 
 
 async def recover_abandoned_work(_: dict) -> None:
@@ -188,8 +199,87 @@ async def run_browser_capture(ctx: dict, command: dict[str, object]) -> None:
             await service.complete_browser_capture(session, command, result)
 
 
+def _discovery_error(error: BrowserEngineError) -> DiscoveryError:
+    if isinstance(error, BrowserCancelled):
+        return DiscoveryCancelled("Discovery navigation was cancelled safely.")
+    if error.code in {"BROWSER_TIMEOUT", "NAVIGATION_TIMEOUT"}:
+        return DiscoveryTimeout("Discovery navigation timed out.")
+    if error.code in {
+        "URL_POLICY_BLOCKED",
+        "DOMAIN_NOT_ALLOWED",
+        "REDIRECT_BLOCKED",
+        "RESOURCE_LIMIT_EXCEEDED",
+    }:
+        return DiscoveryPolicyBlocked("Discovery navigation was blocked by the existing browser policy.")
+    if error.code in {"NAVIGATION_FAILED", "PAGE_CRASHED"}:
+        return DiscoveryNavigationFailed("Discovery navigation could not complete.")
+    return DiscoveryBrowserFailed("Discovery browser operation failed.")
+
+
+async def run_discovery(ctx: dict, command: dict[str, object]) -> None:
+    service = JobService()
+    discovery: DiscoveryService = ctx["discovery_service"]
+    settings = discovery.settings
+    async with SessionFactory() as session:
+        async with session.begin():
+            operation = await service.claim_discovery(
+                session,
+                command,
+                worker_id=socket.gethostname(),
+                lease_seconds=settings.worker_lease_seconds,
+            )
+    if operation is None:
+        return
+    log.info(
+        "discovery.started",
+        job_id=str(operation.job_id),
+        correlation_id=str(operation.correlation_id),
+        operation_key=operation.operation_key,
+        page_id=str(operation.page_id),
+    )
+    request = BrowserOperationRequest(
+        job_id=str(operation.job_id),
+        project_id=str(operation.project_id),
+        correlation_id=str(operation.correlation_id),
+        operation_key=operation.operation_key,
+        url=operation.page_url,
+        allowed_domain=operation.source_domain,
+        capture_screenshot=False,
+        include_navigation_signals=operation.page_method != DiscoveryMethod.SITEMAP.value,
+        navigation_signal_limit=settings.discovery_max_links_per_page,
+        include_document_text=operation.page_method == DiscoveryMethod.SITEMAP.value,
+        document_text_limit=settings.discovery_sitemap_max_bytes,
+    )
+    try:
+        result = await ctx["browser_engine"].capture(request)
+    except BrowserEngineError as browser_error:
+        error = _discovery_error(browser_error)
+        async with SessionFactory() as session:
+            async with session.begin():
+                retry_attempt = await service.fail_discovery(
+                    session, command, error, max_attempts=settings.planner_max_retries
+                )
+        if retry_attempt is not None:
+            raise Retry(defer=retry_delay_seconds(retry_attempt)) from browser_error
+        return
+    async with SessionFactory() as session:
+        async with session.begin():
+            await service.complete_discovery_page(session, command, operation, result, discovery=discovery)
+    if settings.discovery_min_delay_seconds:
+        import asyncio
+
+        await asyncio.sleep(settings.discovery_min_delay_seconds)
+    log.info(
+        "discovery.completed",
+        job_id=str(operation.job_id),
+        correlation_id=str(operation.correlation_id),
+        operation_key=operation.operation_key,
+        page_id=str(operation.page_id),
+    )
+
+
 class WorkerSettings:
-    functions = [run_planning, run_browser_capture]
+    functions = [run_planning, run_browser_capture, run_discovery]
     cron_jobs = [cron(recover_abandoned_work, second={0, 15, 30, 45})]
     on_startup = startup
     redis_settings = redis_settings()

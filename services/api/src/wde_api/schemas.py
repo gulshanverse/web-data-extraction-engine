@@ -123,6 +123,32 @@ class ResultsResponse(BaseModel):
     )
 
 
+class PageInventoryItem(BaseModel):
+    page_id: UUID
+    url: str
+    canonical_url: str
+    status: str
+    discovered_via: str | None = None
+    depth: int
+    parent_page_id: UUID | None = None
+    discovered_at: datetime | None = None
+    visited_at: datetime | None = None
+    http_status: int | None = None
+    content_type: str | None = None
+    title: str | None = None
+    policy_decision: str | None = None
+    relevance_score: float | None = None
+    relevance_reason: str | None = None
+
+
+class PageInventoryResponse(BaseModel):
+    job_id: UUID
+    items: list[PageInventoryItem] = Field(default_factory=list)
+    page: int = 1
+    page_size: int = 100
+    total: int = 0
+
+
 class FileMetadata(BaseModel):
     file_id: UUID
     format: str

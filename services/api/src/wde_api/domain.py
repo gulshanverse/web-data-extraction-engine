@@ -37,7 +37,7 @@ ALLOWED_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
 EVENT_FOR_TRANSITION = {
     (JobStatus.QUEUED, JobStatus.PLANNING): "planning_started",
     (JobStatus.PLANNING, JobStatus.BROWSER_INITIALIZING): "planning_completed",
-    (JobStatus.BROWSER_INITIALIZING, JobStatus.DISCOVERING): "browser_started",
+    (JobStatus.BROWSER_INITIALIZING, JobStatus.DISCOVERING): "discovery_started",
     (JobStatus.QUEUED, JobStatus.CANCELLED): "job_cancelled",
     (JobStatus.PLANNING, JobStatus.CANCELLED): "job_cancelled",
     (JobStatus.BROWSER_INITIALIZING, JobStatus.CANCELLED): "job_cancelled",

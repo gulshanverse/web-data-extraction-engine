@@ -123,7 +123,7 @@ async def test_persists_browser_navigation_metadata_artifacts_and_events() -> No
             await session.scalars(select(BrowserArtifact).where(BrowserArtifact.job_id == page.id))
         ).all()
         events = (await session.scalars(select(ProgressEvent).where(ProgressEvent.job_id == page.id))).all()
-    assert page.status == "BROWSER_INITIALIZING"
+    assert page.status == "DISCOVERING"
     assert page.pages_processed == 1
     assert len(artifacts) == 1 and artifacts[0].storage_key == "opaque-browser-screenshot"
     assert any(event.event_type == "browser_completed" for event in events)

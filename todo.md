@@ -43,3 +43,14 @@
 - [x] Add provider, schema, security, worker, persistence, safe API metadata, cancellation, retry, and browser-regression coverage.
 - [x] Document local provider configuration, resource controls, logging, known limitations, and Phase 5 boundary.
 - [x] Run final migration, regression, lint, type/static, production-build, secret, and phase-boundary gates; commit and push Phase 4 to `main`.
+
+## Phase 5 Discovery Engine Checklist
+
+- [x] Audit the implemented Phase 0–4 contracts, source, migrations, documentation, and tests before making Phase 5 changes.
+- [x] Define typed discovery results, deterministic URL normalization, scope policy, and controlled inventory states.
+- [x] Add durable page-inventory persistence, migration, deduplication, source attribution, and safe discovery metadata.
+- [x] Implement discovery only through the existing worker/outbox lifecycle, reusing Phase 3 browser policy and cancellation controls.
+- [x] Support source, link, pagination, sitemap, and relevant-link discovery interfaces without record extraction or selector generation.
+- [x] Add discovery policy, URL, lifecycle, worker, persistence, cancellation, retry, and regression tests.
+- [x] Document discovery architecture, limits, security boundaries, local configuration, and the Phase 6 boundary.
+- [x] Run final migration, regression, lint, type/static, production-build, secret, and phase-boundary gates; commit and push Phase 5 to `main`.

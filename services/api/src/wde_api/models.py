@@ -168,6 +168,15 @@ class Page(Base):
     navigation_time_ms: Mapped[int | None] = mapped_column(Integer)
     redirect_count: Mapped[int | None] = mapped_column(Integer)
     browser_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    discovered_via: Mapped[str | None] = mapped_column(String(40))
+    depth: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    parent_page_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("pages.id", ondelete="SET NULL"))
+    deduplication_key: Mapped[str | None] = mapped_column(String(128))
+    policy_decision: Mapped[str | None] = mapped_column(String(80))
+    relevance_score: Mapped[float | None] = mapped_column(Float)
+    relevance_reason: Mapped[str | None] = mapped_column(String(500))
+    discovery_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    visited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class BrowserArtifact(Base):
