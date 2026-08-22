@@ -33,6 +33,9 @@ from wde_api.browser_types import (
     NavigationMetadata,
     NavigationSignalResult,
     PolicyDecision,
+    RenderedBlockSignal,
+    RenderedExtractionDocument,
+    RenderedTableSignal,
 )
 from wde_api.config import Settings
 from wde_api.storage import LocalArtifactStore
@@ -221,6 +224,7 @@ class PlaywrightBrowserEngine(BrowserEngine):
                     artifacts: list[BrowserArtifactResult] = []
                     navigation_signals: tuple[NavigationSignalResult, ...] = ()
                     document_text: str | None = None
+                    extraction_document: RenderedExtractionDocument | None = None
                     if request.include_navigation_signals:
                         navigation_signals = await self._navigation_signals(
                             page, max(1, request.navigation_signal_limit)
@@ -229,6 +233,13 @@ class PlaywrightBrowserEngine(BrowserEngine):
                     if request.include_document_text:
                         document_text = await self._document_text(page, max(1, request.document_text_limit))
                         lifecycle_events.append({"type": "navigation_document_collected"})
+                    if request.include_extraction_document:
+                        extraction_document = await self._extraction_document(
+                            page,
+                            max(1, request.extraction_text_limit),
+                            max(1, request.extraction_item_limit),
+                        )
+                        lifecycle_events.append({"type": "extraction_document_collected"})
                     if request.capture_screenshot:
                         artifacts.append(await self._screenshot(page, request.full_page_screenshot))
                     if download_tasks:
@@ -239,6 +250,7 @@ class PlaywrightBrowserEngine(BrowserEngine):
                         tuple(lifecycle_events),
                         navigation_signals,
                         document_text,
+                        extraction_document,
                     )
         except TimeoutError as error:
             raise BrowserTimeout("The browser operation exceeded its configured lifetime.") from error
@@ -333,6 +345,76 @@ class PlaywrightBrowserEngine(BrowserEngine):
         except PlaywrightError as error:
             raise NavigationFailed("Navigation document text could not be read safely.") from error
         return text[:limit]
+
+    async def _extraction_document(
+        self, page: Page, text_limit: int, item_limit: int
+    ) -> RenderedExtractionDocument:
+        """Capture bounded, inert DOM signals only; strategy decisions and record creation remain outside this engine."""
+        try:
+            raw = await asyncio.wait_for(
+                page.evaluate(
+                    """({textLimit, itemLimit}) => {
+                        const clean = value => (value || '').replace(/\\s+/g, ' ').trim();
+                        const text = clean(document.body?.innerText || '').slice(0, textLimit);
+                        const jsonLd = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
+                          .slice(0, itemLimit).map(node => (node.textContent || '').slice(0, textLimit));
+                        const openGraph = {};
+                        Array.from(document.querySelectorAll('meta[property^="og:"]')).slice(0, itemLimit).forEach(node => {
+                          const key = node.getAttribute('property') || '';
+                          const value = node.getAttribute('content') || '';
+                          if (key && value) openGraph[key.slice(3)] = value.slice(0, 2000);
+                        });
+                        const tables = Array.from(document.querySelectorAll('table')).slice(0, itemLimit).map(table => {
+                          const headers = Array.from(table.querySelectorAll('th')).slice(0, itemLimit).map(node => clean(node.innerText));
+                          const rows = Array.from(table.querySelectorAll('tr')).slice(0, itemLimit).map(row =>
+                            Array.from(row.querySelectorAll('td')).slice(0, itemLimit).map(cell => clean(cell.innerText).slice(0, 2000))
+                          ).filter(row => row.length);
+                          return {headers, rows};
+                        }).filter(table => table.headers.length && table.rows.length);
+                        const blocks = Array.from(document.querySelectorAll('article, [role="article"], li, .card, [class*="card"], [class*="product"]'))
+                          .slice(0, itemLimit).map(node => {
+                            const link = node.querySelector('a[href]'); const image = node.querySelector('img[src]');
+                            return {tag: node.tagName.toLowerCase(), text: clean(node.innerText).slice(0, 4000), href: link?.href || null, image_url: image?.src || null};
+                          }).filter(block => block.text);
+                        return {text, jsonLd, openGraph, tables, blocks, truncated: (document.body?.innerText || '').length > textLimit};
+                    }""",
+                    {"textLimit": text_limit, "itemLimit": item_limit},
+                ),
+                timeout=self.settings.browser_action_timeout_ms / 1000,
+            )
+        except PlaywrightTimeoutError as error:
+            raise BrowserTimeout("Extraction document collection exceeded its configured timeout.") from error
+        except PlaywrightError as error:
+            raise NavigationFailed("Extraction document signals could not be read safely.") from error
+        tables = tuple(
+            RenderedTableSignal(
+                headers=tuple(str(value)[:2000] for value in item.get("headers", []) if value),
+                rows=tuple(tuple(str(cell)[:2000] for cell in row) for row in item.get("rows", []) if row),
+            )
+            for item in raw.get("tables", [])
+            if isinstance(item, dict)
+        )
+        blocks = tuple(
+            RenderedBlockSignal(
+                tag=str(item.get("tag", ""))[:80],
+                text=str(item.get("text", ""))[:4000],
+                href=str(item["href"])[:2048] if item.get("href") else None,
+                image_url=str(item["image_url"])[:2048] if item.get("image_url") else None,
+            )
+            for item in raw.get("blocks", [])
+            if isinstance(item, dict) and item.get("text")
+        )
+        open_graph = raw.get("openGraph", {})
+        return RenderedExtractionDocument(
+            page_text=str(raw.get("text", ""))[:text_limit],
+            json_ld=tuple(str(item)[:text_limit] for item in raw.get("jsonLd", []) if item),
+            open_graph={str(key)[:100]: str(value)[:2000] for key, value in open_graph.items()}
+            if isinstance(open_graph, dict)
+            else {},
+            tables=tables,
+            blocks=blocks,
+            truncated=bool(raw.get("truncated", False)),
+        )
 
     async def _store_download(self, download: Download) -> BrowserArtifactResult:
         path = await download.path()

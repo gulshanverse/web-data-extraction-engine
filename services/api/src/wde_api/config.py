@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     discovery_sitemap_max_bytes: int = Field(default=1_048_576, ge=1_024, le=10_485_760)
     discovery_sitemap_max_urls: int = Field(default=500, ge=1, le=10_000)
     discovery_sitemap_max_depth: int = Field(default=1, ge=0, le=5)
+    extraction_max_records: int = Field(default=10_000, ge=1, le=100_000)
+    extraction_max_evidence_chars: int = Field(default=500, ge=64, le=4_000)
+    extraction_max_document_chars: int = Field(default=200_000, ge=1_024, le=2_000_000)
+    extraction_max_document_items: int = Field(default=500, ge=1, le=5_000)
+    extraction_max_retries: int = Field(default=2, ge=0, le=5)
 
 
 @lru_cache

@@ -24,6 +24,15 @@ from wde_api.discovery_errors import (
 from wde_api.discovery_service import DiscoveryService
 from wde_api.discovery_types import DiscoveryMethod
 from wde_api.domain import retry_delay_seconds
+from wde_api.extraction_errors import (
+    ExtractionBrowserFailed,
+    ExtractionCancelled,
+    ExtractionError,
+    ExtractionPolicyBlocked,
+    ExtractionTimeout,
+)
+from wde_api.extraction_service import ExtractionService
+from wde_api.extraction_types import ContentBlockSignal, ExtractionDocument, TableSignal
 from wde_api.logging import configure_logging
 from wde_api.planner_errors import PlannerError, PlannerUnavailable
 from wde_api.planner_model import build_planner_model
@@ -60,6 +69,7 @@ async def startup(_: dict) -> None:
     _["browser_engine"] = PlaywrightBrowserEngine.from_settings(settings, policy_factory)
     _["planner_service"] = PlannerService(build_planner_model(settings), settings)
     _["discovery_service"] = DiscoveryService(settings)
+    _["extraction_service"] = ExtractionService(max_evidence_chars=settings.extraction_max_evidence_chars)
 
 
 async def recover_abandoned_work(_: dict) -> None:
@@ -278,8 +288,103 @@ async def run_discovery(ctx: dict, command: dict[str, object]) -> None:
     )
 
 
+def _extraction_error(error: BrowserEngineError) -> ExtractionError:
+    if isinstance(error, BrowserCancelled):
+        return ExtractionCancelled("Extraction navigation was cancelled safely.")
+    if error.code in {"BROWSER_TIMEOUT", "NAVIGATION_TIMEOUT"}:
+        return ExtractionTimeout("Extraction navigation timed out.")
+    if error.code in {
+        "URL_POLICY_BLOCKED",
+        "DOMAIN_NOT_ALLOWED",
+        "REDIRECT_BLOCKED",
+        "RESOURCE_LIMIT_EXCEEDED",
+    }:
+        return ExtractionPolicyBlocked("Extraction navigation was blocked by the existing browser policy.")
+    return ExtractionBrowserFailed("Extraction browser operation failed.")
+
+
+async def run_extraction(ctx: dict, command: dict[str, object]) -> None:
+    service = JobService()
+    extraction: ExtractionService = ctx["extraction_service"]
+    from wde_api.config import get_settings
+
+    settings = get_settings()
+    async with SessionFactory() as session:
+        async with session.begin():
+            operation = await service.claim_extraction(
+                session, command, worker_id=socket.gethostname(), lease_seconds=settings.worker_lease_seconds
+            )
+    if operation is None:
+        return
+    log.info(
+        "extraction.started",
+        job_id=str(operation.job_id),
+        page_id=str(operation.page_id),
+        operation_key=operation.operation_key,
+    )
+    request = BrowserOperationRequest(
+        job_id=str(operation.job_id),
+        project_id=str(operation.project_id),
+        correlation_id=str(operation.correlation_id),
+        operation_key=operation.operation_key,
+        url=operation.page_url,
+        allowed_domain=operation.source_domain,
+        capture_screenshot=False,
+        include_extraction_document=True,
+        extraction_text_limit=settings.extraction_max_document_chars,
+        extraction_item_limit=settings.extraction_max_document_items,
+    )
+    try:
+        browser_result = await ctx["browser_engine"].capture(request)
+    except BrowserEngineError as browser_error:
+        error = _extraction_error(browser_error)
+        async with SessionFactory() as session:
+            async with session.begin():
+                retry_attempt = await service.fail_extraction(
+                    session, command, error, max_attempts=settings.extraction_max_retries
+                )
+        if retry_attempt is not None:
+            raise Retry(defer=retry_delay_seconds(retry_attempt)) from browser_error
+        return
+    document = browser_result.extraction_document
+    if document is None:
+        error = ExtractionBrowserFailed("The browser did not return a bounded extraction document.")
+        async with SessionFactory() as session:
+            async with session.begin():
+                await service.fail_extraction(
+                    session, command, error, max_attempts=settings.extraction_max_retries
+                )
+        return
+    result = extraction.extract(
+        plan=operation.plan,
+        page_url=browser_result.navigation.final_url,
+        page_id=str(operation.page_id),
+        document=ExtractionDocument(
+            page_text=document.page_text,
+            json_ld=document.json_ld,
+            open_graph=document.open_graph,
+            tables=tuple(TableSignal(item.headers, item.rows) for item in document.tables),
+            blocks=tuple(
+                ContentBlockSignal(item.tag, item.text, item.href, item.image_url) for item in document.blocks
+            ),
+            truncated=document.truncated,
+        ),
+    )
+    async with SessionFactory() as session:
+        async with session.begin():
+            await service.complete_extraction_page(
+                session, command, operation, result, server_max_records=settings.extraction_max_records
+            )
+    log.info(
+        "extraction.completed",
+        job_id=str(operation.job_id),
+        page_id=str(operation.page_id),
+        operation_key=operation.operation_key,
+    )
+
+
 class WorkerSettings:
-    functions = [run_planning, run_browser_capture, run_discovery]
+    functions = [run_planning, run_browser_capture, run_discovery, run_extraction]
     cron_jobs = [cron(recover_abandoned_work, second={0, 15, 30, 45})]
     on_startup = startup
     redis_settings = redis_settings()

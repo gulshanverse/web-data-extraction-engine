@@ -54,3 +54,14 @@
 - [x] Add discovery policy, URL, lifecycle, worker, persistence, cancellation, retry, and regression tests.
 - [x] Document discovery architecture, limits, security boundaries, local configuration, and the Phase 6 boundary.
 - [x] Run final migration, regression, lint, type/static, production-build, secret, and phase-boundary gates; commit and push Phase 5 to `main`.
+
+## Phase 6 Extraction Engine Checklist
+
+- [x] Audit Phase 0–5 contracts, source, migrations, documentation, and test suites before implementing extraction.
+- [x] Define typed extraction results, bounded evidence/provenance, safe normalization, and deterministic record identity.
+- [x] Extend browser contracts only for bounded rendered DOM and structured-data signals required by extraction.
+- [x] Add durable extraction persistence, migration, page extraction metadata, cancellation, retry, idempotency, and Phase 7 handoff behavior.
+- [x] Implement plan-driven extraction for structured data, tables, lists, cards, and detail pages without mutating discovery scope or plan fields.
+- [x] Add extraction unit, security, lifecycle, worker, persistence, browser, normalization, and full regression coverage.
+- [x] Document extraction architecture, configuration, evidence rules, security controls, known limitations, and the Phase 7 boundary.
+- [x] Run final migration, regression, lint, type/static, production-build, secret, and phase-boundary gates; commit and push Phase 6 to `main`.

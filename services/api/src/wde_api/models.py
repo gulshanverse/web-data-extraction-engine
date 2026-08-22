@@ -177,6 +177,10 @@ class Page(Base):
     relevance_reason: Mapped[str | None] = mapped_column(String(500))
     discovery_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     visited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    extraction_status: Mapped[str | None] = mapped_column(String(32))
+    extraction_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    extraction_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    extraction_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class BrowserArtifact(Base):
@@ -204,6 +208,7 @@ class Record(Base):
     __table_args__ = (
         Index("ix_records_job_created", "job_id", "created_at"),
         Index("ix_records_content_hash", "content_hash"),
+        UniqueConstraint("job_id", "record_identity", name="uq_records_job_identity"),
     )
     id: Mapped[uuid.UUID] = uuid_pk()
     job_id: Mapped[uuid.UUID] = mapped_column(
@@ -213,6 +218,11 @@ class Record(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     content_hash: Mapped[str | None] = mapped_column(String(128))
     confidence: Mapped[float | None] = mapped_column(Float)
+    record_identity: Mapped[str | None] = mapped_column(String(128))
+    plan_version: Mapped[int | None] = mapped_column(Integer)
+    strategy: Mapped[str | None] = mapped_column(String(64))
+    provenance: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    extraction_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = created_at()
 
 

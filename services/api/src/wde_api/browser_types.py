@@ -29,6 +29,9 @@ class BrowserOperationRequest:
     navigation_signal_limit: int = 0
     include_document_text: bool = False
     document_text_limit: int = 0
+    include_extraction_document: bool = False
+    extraction_text_limit: int = 0
+    extraction_item_limit: int = 0
 
 
 @dataclass(frozen=True)
@@ -58,12 +61,37 @@ class NavigationSignalResult:
 
 
 @dataclass(frozen=True)
+class RenderedTableSignal:
+    headers: tuple[str, ...]
+    rows: tuple[tuple[str, ...], ...]
+
+
+@dataclass(frozen=True)
+class RenderedBlockSignal:
+    tag: str
+    text: str
+    href: str | None = None
+    image_url: str | None = None
+
+
+@dataclass(frozen=True)
+class RenderedExtractionDocument:
+    page_text: str
+    json_ld: tuple[str, ...] = ()
+    open_graph: dict[str, str] | None = None
+    tables: tuple[RenderedTableSignal, ...] = ()
+    blocks: tuple[RenderedBlockSignal, ...] = ()
+    truncated: bool = False
+
+
+@dataclass(frozen=True)
 class BrowserOperationResult:
     navigation: NavigationMetadata
     artifacts: tuple[BrowserArtifactResult, ...] = ()
     events: tuple[dict[str, object], ...] = ()
     navigation_signals: tuple[NavigationSignalResult, ...] = ()
     document_text: str | None = None
+    extraction_document: RenderedExtractionDocument | None = None
 
 
 class BrowserEngine(Protocol):

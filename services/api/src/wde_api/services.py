@@ -26,6 +26,8 @@ from wde_api.domain import (
     assert_transition,
     retry_delay_seconds,
 )
+from wde_api.extraction_errors import ExtractionError
+from wde_api.extraction_types import ExtractionResult
 from wde_api.models import (
     BrowserArtifact,
     ExtractionJob,
@@ -86,6 +88,18 @@ class DiscoveryOperation:
     page_canonical_url: str
     page_depth: int
     page_method: str | None
+    source_domain: str
+    plan: CanonicalPlan
+
+
+@dataclass(frozen=True)
+class ExtractionOperation:
+    job_id: uuid.UUID
+    project_id: uuid.UUID
+    correlation_id: uuid.UUID
+    operation_key: str
+    page_id: uuid.UUID
+    page_url: str
     source_domain: str
     plan: CanonicalPlan
 
@@ -746,6 +760,31 @@ class JobService:
                 {"stage": JobStatus.DISCOVERING.value, "pages_discovered": job.pages_discovered},
                 operation.correlation_id,
             )
+            await self.transition(
+                session,
+                job_id=job.id,
+                expected_state=JobStatus.DISCOVERING,
+                target_state=JobStatus.EXTRACTING,
+                reason="Discovery inventory completed; extraction work is ready.",
+                operation_key=operation.operation_key,
+                correlation_id=operation.correlation_id,
+            )
+            extraction_key = f"job:{job.id}:extraction:1"
+            session.add(
+                WorkOutbox(
+                    job_id=job.id,
+                    project_id=job.project_id,
+                    command_type="run_extraction",
+                    operation_key=extraction_key,
+                    payload={
+                        "job_id": str(job.id),
+                        "project_id": str(job.project_id),
+                        "correlation_id": str(operation.correlation_id),
+                        "operation_key": extraction_key,
+                        "attempt": 1,
+                    },
+                )
+            )
             return
         self._queue_discovery_page(session, job, next_page, operation.correlation_id)
 
@@ -934,6 +973,308 @@ class JobService:
             session,
             job_id=job.id,
             expected_state=JobStatus.DISCOVERING,
+            target_state=JobStatus.FAILED,
+            reason=error.message,
+            operation_key=str(command["operation_key"]),
+            correlation_id=correlation_id,
+        )
+        return None
+
+    async def claim_extraction(
+        self, session: AsyncSession, command: dict[str, object], *, worker_id: str, lease_seconds: int
+    ) -> ExtractionOperation | None:
+        """Claim exactly one visited Phase 5 inventory page; never creates or discovers URLs."""
+        job_id = uuid.UUID(str(command["job_id"]))
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        if job is None or job.status in {JobStatus.CANCELLED.value, JobStatus.FAILED.value}:
+            return None
+        if job.status != JobStatus.EXTRACTING.value:
+            raise InvalidTransition("Extraction command cannot claim the current job state.")
+        if job.cancel_requested_at:
+            await self.transition(
+                session,
+                job_id=job.id,
+                expected_state=JobStatus.EXTRACTING,
+                target_state=JobStatus.CANCELLED,
+                reason="Cancellation acknowledged before extraction.",
+                operation_key=str(command["operation_key"]),
+                correlation_id=correlation_id,
+            )
+            return None
+        requested_page_id = command.get("page_id")
+        query = select(Page).where(
+            Page.job_id == job.id,
+            Page.status == InventoryStatus.VISITED.value,
+            (Page.extraction_status.is_(None)) | (Page.extraction_status == "PENDING"),
+        )
+        if requested_page_id:
+            query = query.where(Page.id == uuid.UUID(str(requested_page_id)))
+        page = await session.scalar(
+            query.order_by(Page.depth, Page.visited_at, Page.id).with_for_update(skip_locked=True)
+        )
+        if page is None:
+            return None
+        plan_row = await session.scalar(
+            select(ExtractionPlan)
+            .where(ExtractionPlan.job_id == job.id)
+            .order_by(ExtractionPlan.version.desc())
+            .limit(1)
+        )
+        source = await session.get(Source, job.source_id)
+        if plan_row is None or source is None:
+            raise InvalidTransition("Extraction work is missing a canonical plan or source metadata.")
+        page.extraction_status = "EXTRACTING"
+        page.extraction_started_at = utcnow()
+        job.lease_owner = worker_id
+        job.lease_expires_at = utcnow() + timedelta(seconds=lease_seconds)
+        await self._append_event(
+            session,
+            job,
+            "page_extraction_started",
+            {"stage": JobStatus.EXTRACTING.value, "page_id": str(page.id)},
+            correlation_id,
+        )
+        return ExtractionOperation(
+            job_id=job.id,
+            project_id=job.project_id,
+            correlation_id=correlation_id,
+            operation_key=str(command["operation_key"]),
+            page_id=page.id,
+            page_url=page.canonical_url,
+            source_domain=source.domain,
+            plan=CanonicalPlan.model_validate(plan_row.plan),
+        )
+
+    async def complete_extraction_page(
+        self,
+        session: AsyncSession,
+        command: dict[str, object],
+        operation: ExtractionOperation,
+        result: ExtractionResult,
+        *,
+        server_max_records: int = 10_000,
+    ) -> None:
+        job = await session.scalar(
+            select(ExtractionJob).where(ExtractionJob.id == operation.job_id).with_for_update()
+        )
+        if job is None or job.status in {JobStatus.CANCELLED.value, JobStatus.FAILED.value}:
+            return
+        if job.status != JobStatus.EXTRACTING.value:
+            raise InvalidTransition("Extraction completion cannot update the current job state.")
+        if job.cancel_requested_at:
+            await self.transition(
+                session,
+                job_id=job.id,
+                expected_state=JobStatus.EXTRACTING,
+                target_state=JobStatus.CANCELLED,
+                reason="Cancellation acknowledged before record persistence.",
+                operation_key=operation.operation_key,
+                correlation_id=operation.correlation_id,
+            )
+            return
+        page = await session.scalar(select(Page).where(Page.id == operation.page_id).with_for_update())
+        if page is None:
+            raise InvalidTransition("Extraction completion is missing its inventory page.")
+        allowed = min(operation.plan.limits.max_records, server_max_records)
+        existing_count = (
+            await session.scalar(select(func.count()).select_from(Record).where(Record.job_id == job.id)) or 0
+        )
+        created = 0
+        for extracted in result.records[: max(0, allowed - int(existing_count))]:
+            payload = {
+                "schema_version": "records.v1",
+                "record_id": extracted.identity,
+                "plan_version": operation.plan.plan_version,
+                "fields": {
+                    name: {
+                        "raw": field.raw_value,
+                        "value": field.value,
+                        "type": field.field_type,
+                        "strategy": field.strategy,
+                        "confidence": field.confidence,
+                        "missing": field.missing,
+                        "evidence": (
+                            {
+                                "source_text": field.evidence.source_text,
+                                "location": field.evidence.location,
+                                "attribute": field.evidence.attribute,
+                                "structured_path": field.evidence.structured_path,
+                            }
+                            if field.evidence
+                            else None
+                        ),
+                    }
+                    for name, field in extracted.fields.items()
+                },
+                "provenance": extracted.provenance,
+            }
+            record = Record(
+                job_id=job.id,
+                page_id=page.id,
+                payload=payload,
+                content_hash=hashlib.sha256(
+                    json.dumps(payload, sort_keys=True, default=str).encode()
+                ).hexdigest(),
+                confidence=extracted.confidence,
+                record_identity=extracted.identity,
+                plan_version=operation.plan.plan_version,
+                strategy=extracted.strategy,
+                provenance=extracted.provenance,
+                extraction_metadata={"document_truncated": result.document_truncated},
+            )
+            try:
+                async with session.begin_nested():
+                    session.add(record)
+                    await session.flush()
+                created += 1
+            except IntegrityError:
+                await self._append_event(
+                    session,
+                    job,
+                    "record_duplicate",
+                    {"stage": JobStatus.EXTRACTING.value, "page_id": str(page.id)},
+                    operation.correlation_id,
+                )
+        page.extraction_status = "EXTRACTED" if created else "PARTIAL"
+        page.extraction_completed_at = utcnow()
+        page.extraction_metadata = {
+            "records_created": created,
+            "warnings": list(result.warnings),
+            "truncated": result.document_truncated,
+        }
+        job.records_found += created
+        job.pages_processed += 1
+        for warning in result.warnings[:10]:
+            await self._append_event(
+                session,
+                job,
+                "field_extraction_warning",
+                {"stage": JobStatus.EXTRACTING.value, "page_id": str(page.id), "warning": warning},
+                operation.correlation_id,
+            )
+        await self._append_event(
+            session,
+            job,
+            "page_extraction_completed",
+            {"stage": JobStatus.EXTRACTING.value, "page_id": str(page.id), "records_created": created},
+            operation.correlation_id,
+        )
+        job.lease_owner = None
+        job.lease_expires_at = None
+        next_page = await session.scalar(
+            select(Page)
+            .where(
+                Page.job_id == job.id,
+                Page.status == InventoryStatus.VISITED.value,
+                Page.extraction_status.is_(None),
+            )
+            .order_by(Page.depth, Page.visited_at, Page.id)
+            .limit(1)
+        )
+        if next_page is None:
+            job.progress_percent = max(job.progress_percent, 60)
+            await self._append_event(
+                session,
+                job,
+                "extraction_completed",
+                {"stage": JobStatus.EXTRACTING.value, "records_found": job.records_found},
+                operation.correlation_id,
+            )
+            await self.transition(
+                session,
+                job_id=job.id,
+                expected_state=JobStatus.EXTRACTING,
+                target_state=JobStatus.VALIDATING,
+                reason="Extraction records persisted; validation remains a Phase 7 boundary.",
+                operation_key=operation.operation_key,
+                correlation_id=operation.correlation_id,
+            )
+            return
+        self._queue_extraction_page(
+            session, job, next_page, operation.correlation_id, operation.plan.plan_version
+        )
+
+    @staticmethod
+    def _queue_extraction_page(
+        session: AsyncSession, job: ExtractionJob, page: Page, correlation_id: uuid.UUID, plan_version: int
+    ) -> None:
+        key = f"job:{job.id}:extraction:page:{page.id}:{plan_version}"
+        session.add(
+            WorkOutbox(
+                job_id=job.id,
+                project_id=job.project_id,
+                command_type="run_extraction",
+                operation_key=key,
+                payload={
+                    "job_id": str(job.id),
+                    "project_id": str(job.project_id),
+                    "correlation_id": str(correlation_id),
+                    "operation_key": key,
+                    "page_id": str(page.id),
+                    "plan_version": plan_version,
+                    "attempt": 1,
+                },
+            )
+        )
+
+    async def fail_extraction(
+        self, session: AsyncSession, command: dict[str, object], error: ExtractionError, *, max_attempts: int
+    ) -> int | None:
+        job_id = uuid.UUID(str(command["job_id"]))
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        if job is None or job.status in {JobStatus.CANCELLED.value, JobStatus.FAILED.value}:
+            return None
+        if job.status != JobStatus.EXTRACTING.value:
+            return None
+        page_id = command.get("page_id")
+        page = await session.get(Page, uuid.UUID(str(page_id))) if page_id else None
+        if job.cancel_requested_at:
+            if page:
+                page.extraction_status = "SKIPPED"
+            await self.transition(
+                session,
+                job_id=job.id,
+                expected_state=JobStatus.EXTRACTING,
+                target_state=JobStatus.CANCELLED,
+                reason="Extraction cancelled safely.",
+                operation_key=str(command["operation_key"]),
+                correlation_id=correlation_id,
+            )
+            return None
+        if page:
+            page.extraction_status = "FAILED"
+        job.last_error_code, job.last_error_message, job.retryable = (
+            error.code,
+            error.message,
+            error.retryable,
+        )
+        job.lease_owner = job.lease_expires_at = None
+        if error.retryable:
+            job.attempt += 1
+            if job.attempt <= max_attempts:
+                if page:
+                    page.extraction_status = "PENDING"
+                await self._append_event(
+                    session,
+                    job,
+                    "extraction_retry_scheduled",
+                    {"stage": JobStatus.EXTRACTING.value, "attempt": job.attempt},
+                    correlation_id,
+                )
+                return job.attempt
+        await self._append_event(
+            session,
+            job,
+            "page_extraction_failed",
+            {"stage": JobStatus.EXTRACTING.value, "code": error.code},
+            correlation_id,
+        )
+        await self.transition(
+            session,
+            job_id=job.id,
+            expected_state=JobStatus.EXTRACTING,
             target_state=JobStatus.FAILED,
             reason=error.message,
             operation_key=str(command["operation_key"]),
