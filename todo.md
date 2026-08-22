@@ -75,3 +75,13 @@
 - [x] Add validation unit, lifecycle, worker, persistence, security, summary, and full regression coverage.
 - [x] Document validation semantics, quality policy, configuration, security controls, known limitations, and the Phase 8 boundary.
 - [x] Run final migration, regression, lint, type/static, production-build, secret, and phase-boundary gates; commit and push Phase 7 to `main`.
+
+## Phase 8 Excel / CSV / JSON Export Engine Checklist
+
+- [x] Audit Phase 0–7 contracts, source, migrations, storage, documentation, and test suites before implementing exports.
+- [x] Define a canonical validated export dataset, persisted export request policy, deterministic field order, and format metadata.
+- [x] Implement deterministic CSV, JSON, and XLSX exporters with Unicode, nested-value, null, and spreadsheet/CSV injection protections.
+- [x] Add durable export persistence, storage metadata, idempotency, cancellation, retry, progress, events, and safe download references.
+- [x] Add export format, security, storage, lifecycle, policy, and full regression coverage.
+- [x] Document export architecture, invalid-record policy, metadata/provenance policy, limits, security, configuration, and Phase 9 boundary.
+- [x] Run final migration, regression, lint, type/static, production-build, secret, and phase-boundary gates; commit and push Phase 8 to `main`.
