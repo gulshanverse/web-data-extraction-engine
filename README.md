@@ -14,7 +14,7 @@ The planned direction uses a Next.js and TypeScript web client, a Python/FastAPI
 
 ## Project status
 
-**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, **Phase 3 — Playwright Engine**, **Phase 4 — AI Planner**, **Phase 5 — Discovery Engine**, and **Phase 6 — Extraction Engine** are complete. Phase 6 uses only the durable Phase 5 inventory and policy-scoped browser boundary to persist evidence-backed candidate records under the immutable canonical plan. It does not implement final validation, quality scoring, or exports.
+**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, **Phase 3 — Playwright Engine**, **Phase 4 — AI Planner**, **Phase 5 — Discovery Engine**, **Phase 6 — Extraction Engine**, and **Phase 7 — Validation Engine** are complete. Phase 7 deterministically evaluates immutable extraction records, persists append-friendly validation runs and results, and stops at an export-ready handoff without generating files.
 
 See the [Phase 0 architecture documentation](docs/architecture.md) for the system overview. Related contracts and decisions are documented in:
 
@@ -33,6 +33,7 @@ See the [Phase 0 architecture documentation](docs/architecture.md) for the syste
 - [Phase 4 AI planner](docs/phase4-ai-planner.md)
 - [Phase 5 discovery engine](docs/phase5-discovery.md)
 - [Phase 6 extraction engine](docs/phase6-extraction.md)
+- [Phase 7 validation engine](docs/phase7-validation.md)
 
 ## Local backend development
 
@@ -40,4 +41,4 @@ Copy `.env.example` to `.env`, then start PostgreSQL and Redis with `docker comp
 
 Run `pytest`, `ruff check services/api/src`, `ruff format --check services/api/src`, and `alembic -c services/api/alembic.ini current` before contributing. The optional `apps/web/lib/api-client.ts` is the Phase 1-compatible client seam; it does not replace the current mock UI flow.
 
-Development continues incrementally. **Phase 7 — Validation** is the recommended next phase. It must evaluate Phase 6 candidate records without changing extraction evidence or adding exporter behavior.
+Development continues incrementally. **Phase 8 — Excel / CSV / JSON** is the recommended next phase. It must consume validated internal results without rewriting validation outcomes.

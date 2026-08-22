@@ -38,6 +38,8 @@ from wde_api.models import (
     Project,
     Record,
     Source,
+    ValidationResult,
+    ValidationRun,
     WorkOutbox,
 )
 from wde_api.planner_errors import PlannerError
@@ -53,6 +55,9 @@ from wde_api.schemas import (
     ResultsResponse,
 )
 from wde_api.url_policy import validate_initial_url
+from wde_api.validation_errors import ValidationEngineError
+from wde_api.validation_service import ValidationService
+from wde_api.validation_types import VALIDATION_RULESET_VERSION, VALIDATION_SCHEMA_VERSION
 
 
 def utcnow() -> datetime:
@@ -101,6 +106,16 @@ class ExtractionOperation:
     page_id: uuid.UUID
     page_url: str
     source_domain: str
+    plan: CanonicalPlan
+
+
+@dataclass(frozen=True)
+class ValidationOperation:
+    job_id: uuid.UUID
+    project_id: uuid.UUID
+    correlation_id: uuid.UUID
+    operation_key: str
+    validation_run_id: uuid.UUID
     plan: CanonicalPlan
 
 
@@ -1186,9 +1201,46 @@ class JobService:
                 job_id=job.id,
                 expected_state=JobStatus.EXTRACTING,
                 target_state=JobStatus.VALIDATING,
-                reason="Extraction records persisted; validation remains a Phase 7 boundary.",
+                reason="Extraction records persisted; validation work is ready.",
                 operation_key=operation.operation_key,
                 correlation_id=operation.correlation_id,
+            )
+            run_number = (
+                int(
+                    await session.scalar(
+                        select(func.count()).select_from(ValidationRun).where(ValidationRun.job_id == job.id)
+                    )
+                    or 0
+                )
+                + 1
+            )
+            validation_key = f"job:{job.id}:validation:run:{run_number}"
+            run = ValidationRun(
+                job_id=job.id,
+                run_number=run_number,
+                operation_key=validation_key,
+                status="QUEUED",
+                schema_version=VALIDATION_SCHEMA_VERSION,
+                ruleset_version=VALIDATION_RULESET_VERSION,
+                plan_version=operation.plan.plan_version,
+            )
+            session.add(run)
+            await session.flush()
+            session.add(
+                WorkOutbox(
+                    job_id=job.id,
+                    project_id=job.project_id,
+                    command_type="run_validation",
+                    operation_key=validation_key,
+                    payload={
+                        "job_id": str(job.id),
+                        "project_id": str(job.project_id),
+                        "correlation_id": str(operation.correlation_id),
+                        "operation_key": validation_key,
+                        "validation_run_id": str(run.id),
+                        "attempt": 1,
+                    },
+                )
             )
             return
         self._queue_extraction_page(
@@ -1275,6 +1327,199 @@ class JobService:
             session,
             job_id=job.id,
             expected_state=JobStatus.EXTRACTING,
+            target_state=JobStatus.FAILED,
+            reason=error.message,
+            operation_key=str(command["operation_key"]),
+            correlation_id=correlation_id,
+        )
+        return None
+
+    async def claim_validation(
+        self, session: AsyncSession, command: dict[str, object], *, worker_id: str, lease_seconds: int
+    ) -> ValidationOperation | None:
+        job_id = uuid.UUID(str(command["job_id"]))
+        run_id = uuid.UUID(str(command["validation_run_id"]))
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        run = await session.scalar(select(ValidationRun).where(ValidationRun.id == run_id).with_for_update())
+        if (
+            job is None
+            or run is None
+            or job.status != JobStatus.VALIDATING.value
+            or run.status == "COMPLETED"
+        ):
+            return None
+        if job.cancel_requested_at:
+            await self.transition(
+                session,
+                job_id=job.id,
+                expected_state=JobStatus.VALIDATING,
+                target_state=JobStatus.CANCELLED,
+                reason="Cancellation acknowledged before validation.",
+                operation_key=str(command["operation_key"]),
+                correlation_id=correlation_id,
+            )
+            return None
+        plan_row = await session.scalar(
+            select(ExtractionPlan)
+            .where(ExtractionPlan.job_id == job.id)
+            .order_by(ExtractionPlan.version.desc())
+            .limit(1)
+        )
+        if plan_row is None:
+            raise InvalidTransition("Validation is missing the immutable canonical plan.")
+        run.status, run.started_at = "RUNNING", utcnow()
+        job.lease_owner, job.lease_expires_at = worker_id, utcnow() + timedelta(seconds=lease_seconds)
+        await self._append_event(
+            session,
+            job,
+            "validation_started",
+            {"stage": JobStatus.VALIDATING.value, "run_id": str(run.id)},
+            correlation_id,
+        )
+        return ValidationOperation(
+            job.id,
+            job.project_id,
+            correlation_id,
+            str(command["operation_key"]),
+            run.id,
+            CanonicalPlan.model_validate(plan_row.plan),
+        )
+
+    async def complete_validation_run(
+        self, session: AsyncSession, operation: ValidationOperation, validator: ValidationService
+    ) -> None:
+        job = await session.scalar(
+            select(ExtractionJob).where(ExtractionJob.id == operation.job_id).with_for_update()
+        )
+        run = await session.scalar(
+            select(ValidationRun).where(ValidationRun.id == operation.validation_run_id).with_for_update()
+        )
+        if job is None or run is None or job.status != JobStatus.VALIDATING.value:
+            return
+        records = (
+            await session.scalars(select(Record).where(Record.job_id == job.id).order_by(Record.created_at))
+        ).all()
+        totals = {"passed": 0, "failed": 0, "warnings": 0, "unresolved": 0}
+        for record in records:
+            if job.cancel_requested_at:
+                await self.transition(
+                    session,
+                    job_id=job.id,
+                    expected_state=JobStatus.VALIDATING,
+                    target_state=JobStatus.CANCELLED,
+                    reason="Validation cancelled safely.",
+                    operation_key=operation.operation_key,
+                    correlation_id=operation.correlation_id,
+                )
+                return
+            payload = dict(record.payload)
+            payload.setdefault("record_id", record.record_identity or str(record.id))
+            outcome = validator.validate(plan=operation.plan, record=payload)
+            findings = {
+                "schema_version": VALIDATION_SCHEMA_VERSION,
+                "record_id": outcome.record_id,
+                "fields": {
+                    name: {
+                        "status": field.status,
+                        "rules": [
+                            {"rule_id": rule.rule_id, "status": rule.status, "message": rule.message}
+                            for rule in field.rules
+                        ],
+                    }
+                    for name, field in outcome.fields.items()
+                },
+                "record_rules": [
+                    {"rule_id": rule.rule_id, "status": rule.status, "message": rule.message}
+                    for rule in outcome.record_rules
+                ],
+            }
+            session.add(
+                ValidationResult(
+                    job_id=job.id,
+                    record_id=record.id,
+                    validation_run_id=run.id,
+                    status=outcome.status,
+                    findings=findings,
+                    schema_version=VALIDATION_SCHEMA_VERSION,
+                    ruleset_version=VALIDATION_RULESET_VERSION,
+                    plan_version=operation.plan.plan_version,
+                    quality=outcome.quality,
+                    summary=outcome.summary,
+                )
+            )
+            totals["passed"] += outcome.summary["pass"]
+            totals["failed"] += outcome.summary["fail"]
+            totals["warnings"] += outcome.summary["warn"]
+            totals["unresolved"] += outcome.summary["unresolved"]
+            await self._append_event(
+                session,
+                job,
+                "record_validation_completed",
+                {"stage": JobStatus.VALIDATING.value, "record_id": str(record.id), "status": outcome.status},
+                operation.correlation_id,
+            )
+        run.status, run.completed_at, run.summary = "COMPLETED", utcnow(), {"records": len(records), **totals}
+        job.lease_owner = job.lease_expires_at = None
+        job.progress_percent = max(job.progress_percent, 80)
+        await self._append_event(
+            session,
+            job,
+            "validation_completed",
+            {"stage": JobStatus.VALIDATING.value, **run.summary},
+            operation.correlation_id,
+        )
+        await self.transition(
+            session,
+            job_id=job.id,
+            expected_state=JobStatus.VALIDATING,
+            target_state=JobStatus.READY_FOR_EXPORT,
+            reason="Validation results are durable; export remains a later phase.",
+            operation_key=operation.operation_key,
+            correlation_id=operation.correlation_id,
+        )
+
+    async def fail_validation(
+        self,
+        session: AsyncSession,
+        command: dict[str, object],
+        error: ValidationEngineError,
+        *,
+        max_attempts: int,
+    ) -> int | None:
+        job_id = uuid.UUID(str(command["job_id"]))
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        if job is None or job.status != JobStatus.VALIDATING.value:
+            return None
+        job.last_error_code, job.last_error_message, job.retryable = (
+            error.code,
+            error.message,
+            error.retryable,
+        )
+        job.lease_owner = job.lease_expires_at = None
+        if error.retryable:
+            job.attempt += 1
+            if job.attempt <= max_attempts:
+                await self._append_event(
+                    session,
+                    job,
+                    "validation_retry_scheduled",
+                    {"stage": JobStatus.VALIDATING.value, "attempt": job.attempt},
+                    correlation_id,
+                )
+                return job.attempt
+        await self._append_event(
+            session,
+            job,
+            "validation_failed",
+            {"stage": JobStatus.VALIDATING.value, "code": error.code},
+            correlation_id,
+        )
+        await self.transition(
+            session,
+            job_id=job.id,
+            expected_state=JobStatus.VALIDATING,
             target_state=JobStatus.FAILED,
             reason=error.message,
             operation_key=str(command["operation_key"]),

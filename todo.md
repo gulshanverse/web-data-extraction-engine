@@ -65,3 +65,13 @@
 - [x] Add extraction unit, security, lifecycle, worker, persistence, browser, normalization, and full regression coverage.
 - [x] Document extraction architecture, configuration, evidence rules, security controls, known limitations, and the Phase 7 boundary.
 - [x] Run final migration, regression, lint, type/static, production-build, secret, and phase-boundary gates; commit and push Phase 6 to `main`.
+
+## Phase 7 Validation Engine Checklist
+
+- [x] Audit Phase 0–6 contracts, source, migrations, documentation, and test suites before implementing validation.
+- [x] Define typed validation outcomes, deterministic quality classification, rule results, summaries, and immutable-input constraints.
+- [x] Add durable validation-result persistence, migration, record/page validation metadata, idempotency, retry, cancellation, and Phase 8 handoff behavior.
+- [x] Implement schema, type, presence, format, evidence, consistency, duplicate, and cross-field checks without mutating extraction values.
+- [x] Add validation unit, lifecycle, worker, persistence, security, summary, and full regression coverage.
+- [x] Document validation semantics, quality policy, configuration, security controls, known limitations, and the Phase 8 boundary.
+- [x] Run final migration, regression, lint, type/static, production-build, secret, and phase-boundary gates; commit and push Phase 7 to `main`.

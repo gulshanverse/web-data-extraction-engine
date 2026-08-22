@@ -228,14 +228,47 @@ class Record(Base):
 
 class ValidationResult(Base):
     __tablename__ = "validation_results"
-    __table_args__ = (Index("ix_validation_job_status", "job_id", "status"),)
+    __table_args__ = (
+        UniqueConstraint("validation_run_id", "record_id", name="uq_validation_run_record"),
+        Index("ix_validation_job_status", "job_id", "status"),
+    )
     id: Mapped[uuid.UUID] = uuid_pk()
     job_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("extraction_jobs.id", ondelete="CASCADE"), nullable=False
     )
     record_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("records.id", ondelete="SET NULL"))
+    validation_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("validation_runs.id", ondelete="CASCADE")
+    )
     status: Mapped[str] = mapped_column(String(32), default="PENDING", nullable=False)
     findings: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    schema_version: Mapped[str | None] = mapped_column(String(32))
+    ruleset_version: Mapped[str | None] = mapped_column(String(32))
+    plan_version: Mapped[int | None] = mapped_column(Integer)
+    quality: Mapped[str | None] = mapped_column(String(32))
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = created_at()
+
+
+class ValidationRun(Base):
+    __tablename__ = "validation_runs"
+    __table_args__ = (
+        UniqueConstraint("job_id", "run_number", name="uq_validation_runs_job_number"),
+        Index("ix_validation_runs_job_status", "job_id", "status"),
+    )
+    id: Mapped[uuid.UUID] = uuid_pk()
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("extraction_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    run_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    operation_key: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(32), default="QUEUED", nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    ruleset_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    plan_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = created_at()
 
 

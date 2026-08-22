@@ -14,6 +14,7 @@ class JobStatus(StrEnum):
     DISCOVERING = "DISCOVERING"
     EXTRACTING = "EXTRACTING"
     VALIDATING = "VALIDATING"
+    READY_FOR_EXPORT = "READY_FOR_EXPORT"
     EXPORTING = "EXPORTING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
@@ -28,7 +29,14 @@ ALLOWED_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
     JobStatus.BROWSER_INITIALIZING: {JobStatus.DISCOVERING, JobStatus.FAILED, JobStatus.CANCELLED},
     JobStatus.DISCOVERING: {JobStatus.EXTRACTING, JobStatus.FAILED, JobStatus.CANCELLED},
     JobStatus.EXTRACTING: {JobStatus.VALIDATING, JobStatus.FAILED, JobStatus.CANCELLED},
-    JobStatus.VALIDATING: {JobStatus.EXPORTING, JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED},
+    JobStatus.VALIDATING: {
+        JobStatus.READY_FOR_EXPORT,
+        JobStatus.EXPORTING,
+        JobStatus.COMPLETED,
+        JobStatus.FAILED,
+        JobStatus.CANCELLED,
+    },
+    JobStatus.READY_FOR_EXPORT: {JobStatus.EXPORTING, JobStatus.CANCELLED},
     JobStatus.EXPORTING: {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED},
     JobStatus.COMPLETED: set(),
     JobStatus.FAILED: set(),
@@ -44,6 +52,7 @@ EVENT_FOR_TRANSITION = {
     (JobStatus.DISCOVERING, JobStatus.CANCELLED): "job_cancelled",
     (JobStatus.EXTRACTING, JobStatus.CANCELLED): "job_cancelled",
     (JobStatus.VALIDATING, JobStatus.CANCELLED): "job_cancelled",
+    (JobStatus.READY_FOR_EXPORT, JobStatus.CANCELLED): "job_cancelled",
     (JobStatus.EXPORTING, JobStatus.CANCELLED): "job_cancelled",
 }
 

@@ -39,6 +39,8 @@ from wde_api.planner_model import build_planner_model
 from wde_api.planner_service import PlannerService
 from wde_api.queue import OutboxDispatcher, redis_settings
 from wde_api.services import JobService
+from wde_api.validation_errors import ValidationEngineError, ValidationInfrastructureError
+from wde_api.validation_service import ValidationService
 
 log = structlog.get_logger()
 
@@ -70,6 +72,7 @@ async def startup(_: dict) -> None:
     _["planner_service"] = PlannerService(build_planner_model(settings), settings)
     _["discovery_service"] = DiscoveryService(settings)
     _["extraction_service"] = ExtractionService(max_evidence_chars=settings.extraction_max_evidence_chars)
+    _["validation_service"] = ValidationService()
 
 
 async def recover_abandoned_work(_: dict) -> None:
@@ -383,8 +386,46 @@ async def run_extraction(ctx: dict, command: dict[str, object]) -> None:
     )
 
 
+async def run_validation(ctx: dict, command: dict[str, object]) -> None:
+    service = JobService()
+    validator: ValidationService = ctx["validation_service"]
+    from wde_api.config import get_settings
+
+    settings = get_settings()
+    async with SessionFactory() as session:
+        async with session.begin():
+            operation = await service.claim_validation(
+                session, command, worker_id=socket.gethostname(), lease_seconds=settings.worker_lease_seconds
+            )
+    if operation is None:
+        return
+    log.info(
+        "validation.started",
+        job_id=str(operation.job_id),
+        operation_key=operation.operation_key,
+        run_id=str(operation.validation_run_id),
+    )
+    try:
+        async with SessionFactory() as session:
+            async with session.begin():
+                await service.complete_validation_run(session, operation, validator)
+    except ValidationEngineError as error:
+        async with SessionFactory() as session:
+            async with session.begin():
+                retry_attempt = await service.fail_validation(session, command, error, max_attempts=2)
+        if retry_attempt is not None:
+            raise Retry(defer=retry_delay_seconds(retry_attempt)) from error
+    except Exception as exc:
+        error = ValidationInfrastructureError("Validation infrastructure failed safely.")
+        async with SessionFactory() as session:
+            async with session.begin():
+                retry_attempt = await service.fail_validation(session, command, error, max_attempts=2)
+        if retry_attempt is not None:
+            raise Retry(defer=retry_delay_seconds(retry_attempt)) from exc
+
+
 class WorkerSettings:
-    functions = [run_planning, run_browser_capture, run_discovery, run_extraction]
+    functions = [run_planning, run_browser_capture, run_discovery, run_extraction, run_validation]
     cron_jobs = [cron(recover_abandoned_work, second={0, 15, 30, 45})]
     on_startup = startup
     redis_settings = redis_settings()
