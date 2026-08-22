@@ -14,7 +14,7 @@ The planned direction uses a Next.js and TypeScript web client, a Python/FastAPI
 
 ## Project status
 
-**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, **Phase 3 — Playwright Engine**, **Phase 4 — AI Planner**, **Phase 5 — Discovery Engine**, **Phase 6 — Extraction Engine**, **Phase 7 — Validation Engine**, and **Phase 8 — Excel / CSV / JSON Export Engine** are complete. Phase 8 creates one canonical validated dataset and renders it deterministically as CSV, JSON, or XLSX through the established artifact storage boundary.
+**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, **Phase 3 — Playwright Engine**, **Phase 4 — AI Planner**, **Phase 5 — Discovery Engine**, **Phase 6 — Extraction Engine**, **Phase 7 — Validation Engine**, **Phase 8 — Excel / CSV / JSON Export Engine**, and **Phase 9 — Progress + Results Experience** are complete. Phase 9 makes Data Loom a typed real client of the existing job status, cancellation, results, files, and SSE interfaces without changing pipeline behavior.
 
 See the [Phase 0 architecture documentation](docs/architecture.md) for the system overview. Related contracts and decisions are documented in:
 
@@ -35,6 +35,7 @@ See the [Phase 0 architecture documentation](docs/architecture.md) for the syste
 - [Phase 6 extraction engine](docs/phase6-extraction.md)
 - [Phase 7 validation engine](docs/phase7-validation.md)
 - [Phase 8 export engine](docs/phase8-export.md)
+- [Phase 9 progress and results](docs/phase9-progress-results.md)
 
 ## Local backend development
 

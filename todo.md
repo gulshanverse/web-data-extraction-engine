@@ -85,3 +85,13 @@
 - [x] Add export format, security, storage, lifecycle, policy, and full regression coverage.
 - [x] Document export architecture, invalid-record policy, metadata/provenance policy, limits, security, configuration, and Phase 9 boundary.
 - [x] Run final migration, regression, lint, type/static, production-build, secret, and phase-boundary gates; commit and push Phase 8 to `main`.
+
+## Phase 9 Progress + Results Experience Checklist
+
+- [x] Audit Phase 0–8 backend/frontend contracts, routes, SSE, export seams, documentation, and tests before implementing the product experience.
+- [x] Preserve the Data Loom light/dark design system and define real job, progress, results, exports, history, and recovery states.
+- [x] Replace mock lifecycle behavior with authorized backend API and SSE integration, including reconnection and terminal-state refresh behavior.
+- [x] Implement responsive, accessible progress, record inspection, validation, export, history, error, cancellation, and retry presentation without backend lifecycle changes.
+- [x] Add frontend integration, SSE, responsive, accessibility, empty/error/loading, and regression tests.
+- [x] Document Phase 9 data flow, live updates, UX boundaries, known limitations, and the Phase 10 boundary.
+- [x] Run final backend/frontend quality gates, screenshots, secret/boundary scans, commit, and push Phase 9 to `main`.
