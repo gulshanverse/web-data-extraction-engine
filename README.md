@@ -4,12 +4,29 @@ A modular web data extraction engine for discovering, extracting, validating, tr
 
 ## Purpose
 
-The project is intended to provide a reliable, extensible foundation for turning publicly accessible web content into structured, validated data. Development will proceed incrementally, with each stage adding and verifying a focused capability before the next layer is introduced.
+The long-term product will accept a website URL, a natural-language extraction request, optional requirements, crawl controls, and requested output formats. It will turn that intent into a bounded asynchronous workflow for discovery, browser-assisted capture, deterministic extraction, validation, and export.
 
-## Planned direction
+The platform is designed for publicly accessible content that the user is permitted to access. It is not a chatbot or a simple scraper, and it will not bypass CAPTCHA, authentication, authorization, paywalls, access controls, or other security mechanisms.
 
-The long-term system is expected to use Python-based extraction and data-processing services, a Node.js/Next.js interface where a frontend is needed, automated tests, and Docker-based development and deployment workflows. The repository currently contains only the initial project foundation; implementation will be added in subsequent phases.
+## Technology direction
 
-## Status
+The planned direction uses a Next.js and TypeScript web client, a Python/FastAPI API, asynchronous Playwright browser workers, PostgreSQL for durable state, Redis for background-job transport, and an S3-compatible storage abstraction with local filesystem support during development. Data-processing libraries such as Pandas, BeautifulSoup4, lxml, and OpenPyXL will be introduced when their corresponding capabilities are implemented.
 
-Foundation setup is in progress. The Phase 0 architecture and functional subsystems have not yet been implemented.
+## Project status
+
+**Phase 0 — Architecture** is complete. The repository currently establishes the system design and contracts; functional frontend, backend, browser, AI planner, discovery, extraction, validation, export, and deployment components remain assigned to later phases.
+
+See the [Phase 0 architecture documentation](docs/architecture.md) for the system overview. Related contracts and decisions are documented in:
+
+- [System design](docs/system-design.md)
+- [Data model](docs/data-model.md)
+- [API contracts](docs/api-contracts.md)
+- [Job lifecycle](docs/job-lifecycle.md)
+- [Browser policy](docs/browser-policy.md)
+- [Security boundaries](docs/security-boundaries.md)
+- [Storage architecture](docs/storage-and-operations.md)
+- [Agent boundaries](docs/agent-boundaries.md)
+- [Roadmap and phase boundaries](docs/phase-boundaries.md)
+- [ADR-001: Modular asynchronous architecture](docs/decisions/ADR-001-architecture.md)
+
+Development will continue incrementally. The recommended next phase is **Phase 1 — Frontend**; it must not bypass the documented contracts or start future-phase implementation early.
