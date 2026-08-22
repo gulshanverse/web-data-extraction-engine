@@ -42,4 +42,4 @@
 - [x] Preserve the `QUEUED → PLANNING → BROWSER_INITIALIZING` lifecycle and stop before discovery.
 - [x] Add provider, schema, security, worker, persistence, safe API metadata, cancellation, retry, and browser-regression coverage.
 - [x] Document local provider configuration, resource controls, logging, known limitations, and Phase 5 boundary.
-- [ ] Run final migration, regression, lint, type/static, production-build, secret, and phase-boundary gates; commit and push Phase 4 to `main`.
+- [x] Run final migration, regression, lint, type/static, production-build, secret, and phase-boundary gates; commit and push Phase 4 to `main`.
