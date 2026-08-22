@@ -36,6 +36,13 @@ async def test_rejects_unsupported_schemes_credentials_and_private_dns_answers()
     assert not denied.allowed and denied.code == "URL_POLICY_BLOCKED"
 
 
+@pytest.mark.asyncio
+async def test_rejects_non_default_public_ports_during_navigation() -> None:
+    policy = DefaultBrowserPolicy("example.test", 1, 3, resolver=public_resolver)
+    denied = await policy.allow_navigation("https://example.test:8443/ok")
+    assert not denied.allowed and denied.code == "URL_POLICY_BLOCKED"
+
+
 def test_enforces_page_and_redirect_limits() -> None:
     policy = DefaultBrowserPolicy("example.test", 1, 2, resolver=public_resolver)
     assert policy.allow_page_count(0).allowed

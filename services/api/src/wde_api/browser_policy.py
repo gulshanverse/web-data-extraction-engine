@@ -61,6 +61,8 @@ class DefaultBrowserPolicy(BrowserPolicy):
             port = f":{parsed.port}" if parsed.port else ""
         except ValueError:
             return None
+        if parsed.port not in {None, 80, 443}:
+            return None
         return host, urlunsplit(
             (parsed.scheme.lower(), f"{host}{port}", parsed.path or "/", parsed.query, "")
         )

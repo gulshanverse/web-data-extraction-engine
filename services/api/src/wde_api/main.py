@@ -31,11 +31,16 @@ from wde_api.schemas import (
     PageInventoryResponse,
     ResultsResponse,
 )
+from wde_api.security import SlidingWindowRateLimiter
 from wde_api.services import JobService
 from wde_api.storage import ArtifactRef, LocalArtifactStore
 
 service, dispatcher = JobService(), OutboxDispatcher()
 log = structlog.get_logger()
+settings = get_settings()
+rate_limiter = SlidingWindowRateLimiter(
+    settings.api_rate_limit_requests, settings.api_rate_limit_window_seconds
+)
 
 
 @asynccontextmanager
@@ -55,8 +60,76 @@ async def correlation_middleware(request: Request, call_next):
     except ValueError:
         correlation_id = uuid.uuid4()
     request.state.correlation_id = correlation_id
+    if request.url.path.startswith("/api/"):
+        client_key = request.client.host if request.client else "unknown"
+        if not rate_limiter.allow(client_key):
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": {
+                        "code": "RATE_LIMITED",
+                        "message": "The request rate limit was reached.",
+                        "retryable": True,
+                        "correlation_id": str(correlation_id),
+                        "details": {},
+                    }
+                },
+                headers={
+                    "Retry-After": str(max(1, int(settings.api_rate_limit_window_seconds))),
+                    "X-Content-Type-Options": "nosniff",
+                    "X-Frame-Options": "DENY",
+                    "Referrer-Policy": "no-referrer",
+                    "Cache-Control": "no-store",
+                },
+            )
+        if request.method in {"POST", "PUT", "PATCH"}:
+            declared_size = request.headers.get("content-length")
+            if declared_size and declared_size.isdigit() and int(declared_size) > settings.max_request_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "error": {
+                            "code": "RESOURCE_LIMIT_EXCEEDED",
+                            "message": "The request exceeds the configured size limit.",
+                            "retryable": False,
+                            "correlation_id": str(correlation_id),
+                            "details": {},
+                        }
+                    },
+                    headers={
+                        "X-Content-Type-Options": "nosniff",
+                        "X-Frame-Options": "DENY",
+                        "Referrer-Policy": "no-referrer",
+                        "Cache-Control": "no-store",
+                    },
+                )
+            if len(await request.body()) > settings.max_request_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "error": {
+                            "code": "RESOURCE_LIMIT_EXCEEDED",
+                            "message": "The request exceeds the configured size limit.",
+                            "retryable": False,
+                            "correlation_id": str(correlation_id),
+                            "details": {},
+                        }
+                    },
+                    headers={
+                        "X-Content-Type-Options": "nosniff",
+                        "X-Frame-Options": "DENY",
+                        "Referrer-Policy": "no-referrer",
+                        "Cache-Control": "no-store",
+                    },
+                )
     response = await call_next(request)
     response.headers["X-Correlation-ID"] = str(correlation_id)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Cache-Control", "no-store" if request.url.path.startswith("/api/") else "no-cache"
+    )
     return response
 
 

@@ -25,3 +25,19 @@ def test_rejects_unsupported_or_credentialed_schemes(url: str) -> None:
 def test_rejects_obvious_internal_targets(url: str) -> None:
     with pytest.raises(DomainNotAllowed):
         validate_initial_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.com:8080/",
+        "https://example.com:8443/",
+        "http://example.com:bad/",
+        "http://2130706433/",
+        "http://0x7f000001/",
+        "http://[::ffff:127.0.0.1]/",
+    ],
+)
+def test_rejects_unapproved_ports_and_unusual_private_address_forms(url: str) -> None:
+    with pytest.raises((InvalidUrl, DomainNotAllowed)):
+        validate_initial_url(url)

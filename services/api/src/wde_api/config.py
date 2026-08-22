@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     artifact_root: Path = Path("/tmp/web-data-extraction-engine-artifacts")
     max_request_bytes: int = Field(default=1_048_576, ge=1_024, le=10_485_760)
+    api_rate_limit_requests: int = Field(default=120, ge=10, le=10_000)
+    api_rate_limit_window_seconds: float = Field(default=60.0, ge=1.0, le=3600.0)
     dev_principal_email: str = "developer@example.invalid"
     worker_lease_seconds: int = Field(default=120, ge=30, le=3600)
     api_event_poll_seconds: float = Field(default=0.5, ge=0.1, le=5.0)

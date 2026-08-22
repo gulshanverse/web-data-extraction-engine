@@ -14,7 +14,7 @@ The planned direction uses a Next.js and TypeScript web client, a Python/FastAPI
 
 ## Project status
 
-**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, **Phase 3 — Playwright Engine**, **Phase 4 — AI Planner**, **Phase 5 — Discovery Engine**, **Phase 6 — Extraction Engine**, **Phase 7 — Validation Engine**, **Phase 8 — Excel / CSV / JSON Export Engine**, **Phase 9 — Progress + Results Experience**, and **Phase 10 — Document Formats** are complete. **Phase 9R — Real Results Projection Repair** replaces production sample result data with authorized durable records, validation outcomes, job-wide metrics, pagination, and generated-file metadata. **Phase 10R — Durable Export Lifecycle Repair** connects every supported tabular and document renderer to the existing outbox, worker, artifact storage, generated-file metadata, authorized files API, and minimal results recognition without revisiting websites or altering pipeline data.
+**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, **Phase 3 — Playwright Engine**, **Phase 4 — AI Planner**, **Phase 5 — Discovery Engine**, **Phase 6 — Extraction Engine**, **Phase 7 — Validation Engine**, **Phase 8 — Excel / CSV / JSON Export Engine**, **Phase 9 — Progress + Results Experience**, **Phase 10 — Document Formats**, and **Phase 11 — Security + Testing** are complete. **Phase 9R — Real Results Projection Repair** replaces production sample result data with authorized durable records, validation outcomes, job-wide metrics, pagination, and generated-file metadata. **Phase 10R — Durable Export Lifecycle Repair** connects every supported tabular and document renderer to the existing outbox, worker, artifact storage, generated-file metadata, authorized files API, and minimal results recognition without revisiting websites or altering pipeline data. **Phase 11** records the threat model, adds bounded API and browser/queue hardening, patches audited frontend transitive dependencies, and preserves explicit production-readiness blockers.
 
 See the [Phase 0 architecture documentation](docs/architecture.md) for the system overview. Related contracts and decisions are documented in:
 
@@ -39,6 +39,9 @@ See the [Phase 0 architecture documentation](docs/architecture.md) for the syste
 - [Phase 9R real results projection repair](docs/phase9-results-projection-repair.md)
 - [Phase 10 document formats](docs/phase10-documents.md)
 - [Phase 10R durable export lifecycle repair](docs/phase10-export-lifecycle-repair.md)
+- [Phase 11 security and testing](docs/phase11-security-testing.md)
+- [Threat model](docs/security/threat-model.md)
+- [Security hardening record](docs/security/security-hardening.md)
 
 ## Local backend development
 
@@ -46,4 +49,4 @@ Copy `.env.example` to `.env`, then start PostgreSQL and Redis with `docker comp
 
 Run `pytest`, `ruff check services/api/src`, `ruff format --check services/api/src`, and `alembic -c services/api/alembic.ini current` before contributing. The typed `apps/web/lib/api-client.ts` client seam supplies the authenticated job, results, files, and SSE contracts used by the Phase 9 workspace.
 
-Development continues incrementally. The next action is the mandatory **Phase 11 preflight**; this repository has not started Phase 11 security hardening or Phase 12 deployment work.
+Development continues incrementally. **Phase 12 deployment work has not started.** The Phase 11 production-readiness assessment identifies the authentication, network, shared-rate-limit, retention, observability, CI, and deployment controls required before a production launch.

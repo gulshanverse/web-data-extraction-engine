@@ -55,6 +55,11 @@ def validate_initial_url(raw: str) -> CanonicalUrl:
     except ValueError:
         if "." not in host or any(label == "" for label in host.split(".")):
             raise InvalidUrl("The source URL must contain a valid public hostname.") from None
+    try:
+        if parsed.port not in {None, 80, 443}:
+            raise InvalidUrl("The source URL uses a port that is not permitted.")
+    except ValueError as exc:
+        raise InvalidUrl("The source URL is malformed.") from exc
     netloc = host if parsed.port is None else f"{host}:{parsed.port}"
     path = parsed.path or "/"
     return CanonicalUrl(urlunsplit((parsed.scheme.lower(), netloc, path, parsed.query, "")), host)

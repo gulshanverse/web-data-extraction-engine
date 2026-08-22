@@ -14,14 +14,7 @@ from wde_api.models import WorkOutbox
 
 
 def redis_settings() -> RedisSettings:
-    from urllib.parse import urlsplit
-
-    parsed = urlsplit(get_settings().redis_url)
-    return RedisSettings(
-        host=parsed.hostname or "localhost",
-        port=parsed.port or 6379,
-        database=int((parsed.path or "/0").lstrip("/") or 0),
-    )
+    return RedisSettings.from_dsn(get_settings().redis_url)
 
 
 class OutboxDispatcher:

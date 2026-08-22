@@ -121,3 +121,11 @@
 - [x] Replace backend placeholder validation data and frontend sample result presentation with authorized real durable data while preserving Data Loom design.
 - [x] Add backend/frontend regressions for validation states, metrics, pagination, empty/error states, authorization, SSE completion refresh, and Phase 10R files.
 - [x] Run complete Phase 9R quality gates, update documentation, commit, and push the repair to `main`.
+
+## Phase 11 Security + Testing Checklist
+
+- [x] Complete a repository-wide Phase 0–10R/9R security preflight and record baseline results.
+- [x] Create the threat model, hardening record, test matrix, findings register, residual risks, and production-readiness assessment.
+- [x] Implement bounded input, browser-policy, authorization, API, storage, queue, worker, logging, error, and resource hardening without Phase 12 work.
+- [x] Add adversarial SSRF, URL, AI, cross-user, SSE, export, document, filesystem, resource, concurrency, cancellation, retry, and recovery coverage.
+- [x] Run full backend/frontend/migration/dependency/secret/boundary validation, commit, and push Phase 11 to `main`.
