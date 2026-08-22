@@ -95,3 +95,12 @@
 - [x] Add frontend integration, SSE, responsive, accessibility, empty/error/loading, and regression tests.
 - [x] Document Phase 9 data flow, live updates, UX boundaries, known limitations, and the Phase 10 boundary.
 - [x] Run final backend/frontend quality gates, screenshots, secret/boundary scans, commit, and push Phase 9 to `main`.
+
+## Phase 10 PDF / DOCX / Document Formats Checklist
+
+- [x] Audit Phase 0–9 contracts, canonical export dataset, storage, frontend seams, documentation, and tests before document-export work.
+- [x] Define a versioned document profile, document data model, renderer registry, safe metadata policy, and rendering limits.
+- [x] Implement deterministic PDF and DOCX renderers, with Markdown, TXT, and HTML document forms where supported, from the canonical export dataset only.
+- [x] Add document rendering, Unicode, long-text, layout, link, safety, storage, lifecycle, and regression tests.
+- [x] Document document profiles, format-specific behavior, metadata, provenance, limits, safety, testing, and Phase 11 boundary.
+- [x] Run final quality gates, commit, and push Phase 10 to `main`.
