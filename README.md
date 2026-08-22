@@ -14,7 +14,7 @@ The planned direction uses a Next.js and TypeScript web client, a Python/FastAPI
 
 ## Project status
 
-**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, and **Phase 3 — Playwright Engine** are complete. Phase 3 replaces the former browser stop with an isolated, policy-scoped Chromium operation that loads only the permitted source page, records safe navigation metadata, persists permitted screenshots through the storage abstraction, emits durable progress events, and then stops at the discovery boundary. It does not implement AI planning, discovery, extraction, validation, or export behavior.
+**Phase 0 — Architecture**, **Phase 1 — Frontend**, **Phase 2 — Backend + Jobs**, **Phase 3 — Playwright Engine**, and **Phase 4 — AI Planner** are complete. Phase 4 uses the durable job worker to request a strictly structured, declarative plan from an explicitly configured provider, validates and canonicalizes that plan with server-owned limits, hashes and audits it, and then hands off only to the existing Phase 3 browser-capture boundary. It does not implement discovery, DOM inspection, selector generation, extraction, record validation, or export behavior.
 
 See the [Phase 0 architecture documentation](docs/architecture.md) for the system overview. Related contracts and decisions are documented in:
 
@@ -30,6 +30,7 @@ See the [Phase 0 architecture documentation](docs/architecture.md) for the syste
 - [ADR-001: Modular asynchronous architecture](docs/decisions/ADR-001-architecture.md)
 - [Phase 3 Playwright engine](docs/phase3-playwright-engine.md)
 - [ADR-002: Browser artifact metadata](docs/decisions/ADR-002-browser-artifacts.md)
+- [Phase 4 AI planner](docs/phase4-ai-planner.md)
 
 ## Local backend development
 
@@ -37,4 +38,4 @@ Copy `.env.example` to `.env`, then start PostgreSQL and Redis with `docker comp
 
 Run `pytest`, `ruff check services/api/src`, `ruff format --check services/api/src`, and `alembic -c services/api/alembic.ini current` before contributing. The optional `apps/web/lib/api-client.ts` is the Phase 1-compatible client seam; it does not replace the current mock UI flow.
 
-Development continues incrementally. The recommended next phase is **Phase 4 — AI Planner**. It must provide a schema-validated, versioned plan without adding discovery, extraction, validation, or export behavior.
+Development continues incrementally. **Phase 5 — Discovery** is the recommended next phase. It must define and test discovery behavior separately; no discovery capability is included in Phase 4.

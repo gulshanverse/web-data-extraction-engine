@@ -80,6 +80,10 @@ class JobAccepted(BaseModel):
 class PlanProjection(BaseModel):
     version: int
     status: str
+    schema_version: str | None = None
+    model_name: str | None = None
+    plan_hash: str | None = None
+    created_at: datetime | None = None
 
 
 class ErrorProjection(BaseModel):

@@ -39,6 +39,18 @@ class Settings(BaseSettings):
     browser_user_agent: str = (
         "WebDataExtractionEngine/0.3 (+https://github.com/gulshanverse/web-data-extraction-engine)"
     )
+    planner_provider: str = "openai_compatible"
+    planner_model: str = "gpt-5-mini"
+    planner_api_endpoint: str = ""
+    planner_api_key: str = ""
+    planner_timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
+    planner_max_retries: int = Field(default=2, ge=0, le=5)
+    planner_max_output_tokens: int = Field(default=2048, ge=256, le=8192)
+    planner_max_task_chars: int = Field(default=8_000, ge=256, le=32_000)
+    planner_max_pages: int = Field(default=100, ge=1, le=1_000)
+    planner_max_records: int = Field(default=10_000, ge=1, le=100_000)
+    planner_max_fields: int = Field(default=64, ge=1, le=128)
+    planner_max_outputs: int = Field(default=7, ge=1, le=7)
 
 
 @lru_cache

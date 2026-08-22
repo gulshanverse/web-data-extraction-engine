@@ -1,4 +1,4 @@
-# Phase 1 Frontend Redesign Checklist
+# Implementation Checklist
 
 - [x] Read and map the complete attached redesign specification.
 - [x] Replace the existing frontend implementation with the required Next.js application structure.
@@ -19,7 +19,7 @@
 - [x] Implement compare-and-set lifecycle transitions, ordered progress events, cancellation, retry, outbox scheduling, and the Redis worker command.
 - [x] Implement job status, results, file metadata, and SSE event-stream contracts without later-phase extraction engines.
 - [x] Run database-backed integration tests, migrations, API-contract checks, security scans, and code-quality validation.
-- [ ] Commit and push Phase 2 to `main` without implementing Phase 3 or later.
+- [x] Commit and push Phase 2 to `main` without implementing Phase 3 or later.
 
 ## Phase 3 Playwright Engine Checklist
 
@@ -30,4 +30,16 @@
 - [x] Integrate browser initialization work with the durable Phase 2 orchestrator, worker, job transitions, events, and artifact storage.
 - [x] Add deterministic policy, lifecycle, redirect, cancellation, timeout, storage, worker, and integration tests.
 - [x] Run Playwright, API, worker, migration, security, lint, format, type/static, build, and phase-boundary validation.
-- [ ] Commit and push Phase 3 to `main` without implementing Phase 4 or later.
+- [x] Commit and push Phase 3 to `main` without implementing Phase 4 or later.
+
+## Phase 4 AI Planner Checklist
+
+- [x] Add a configured production provider abstraction and a deterministic test-only model implementation.
+- [x] Define a strict, declarative, versioned plan schema and deterministic canonical SHA-256 hash.
+- [x] Reject unsafe prompt-injection text, source changes, selector/code-like output, unknown properties, and limit or option mutation.
+- [x] Persist validated plan audit metadata through migration `0003_planner_metadata`.
+- [x] Replace the durable planning placeholder with claim, generation, completion, failure, cancellation, retry, and outbox-handoff behavior.
+- [x] Preserve the `QUEUED → PLANNING → BROWSER_INITIALIZING` lifecycle and stop before discovery.
+- [x] Add provider, schema, security, worker, persistence, safe API metadata, cancellation, retry, and browser-regression coverage.
+- [x] Document local provider configuration, resource controls, logging, known limitations, and Phase 5 boundary.
+- [ ] Run final migration, regression, lint, type/static, production-build, secret, and phase-boundary gates; commit and push Phase 4 to `main`.

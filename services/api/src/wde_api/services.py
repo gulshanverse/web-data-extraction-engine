@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
@@ -34,6 +35,8 @@ from wde_api.models import (
     Source,
     WorkOutbox,
 )
+from wde_api.planner_errors import PlannerError
+from wde_api.planner_types import PROMPT_VERSION, CanonicalPlan, plan_hash
 from wde_api.schemas import (
     CancelResponse,
     FilesResponse,
@@ -54,6 +57,19 @@ def utcnow() -> datetime:
 def request_fingerprint(command: JobCreateRequest) -> str:
     payload = command.model_dump(mode="json")
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class PlanningOperation:
+    job_id: uuid.UUID
+    project_id: uuid.UUID
+    correlation_id: uuid.UUID
+    operation_key: str
+    source_url: str
+    task: str
+    requested_fields: list[str]
+    options: dict[str, object]
+    output_formats: list[str]
 
 
 class JobService:
@@ -273,60 +289,137 @@ class JobService:
         )
         return job
 
-    async def process_planning_placeholder(
-        self, session: AsyncSession, command: dict[str, object], *, worker_id: str
-    ) -> None:
+    async def claim_planning(
+        self, session: AsyncSession, command: dict[str, object], *, worker_id: str, lease_seconds: int
+    ) -> PlanningOperation | None:
+        job_id = uuid.UUID(str(command["job_id"]))
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        operation_key = str(command["operation_key"])
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        if job is None or job.status in {
+            JobStatus.BROWSER_INITIALIZING.value,
+            JobStatus.CANCELLED.value,
+            JobStatus.FAILED.value,
+        }:
+            return None
+        if job.status not in {JobStatus.QUEUED.value, JobStatus.PLANNING.value}:
+            raise InvalidTransition("Planning command cannot claim the current job state.")
+        if job.cancel_requested_at:
+            if job.status == JobStatus.QUEUED.value:
+                await self.transition(
+                    session,
+                    job_id=job_id,
+                    expected_state=JobStatus.QUEUED,
+                    target_state=JobStatus.CANCELLED,
+                    reason="Cancellation acknowledged before planning.",
+                    operation_key=operation_key,
+                    correlation_id=correlation_id,
+                )
+            else:
+                await self.transition(
+                    session,
+                    job_id=job_id,
+                    expected_state=JobStatus.PLANNING,
+                    target_state=JobStatus.CANCELLED,
+                    reason="Cancellation acknowledged before planning completion.",
+                    operation_key=operation_key,
+                    correlation_id=correlation_id,
+                )
+            return None
+        if (
+            job.status == JobStatus.PLANNING.value
+            and job.lease_expires_at
+            and job.lease_expires_at > utcnow()
+        ):
+            return None
+        if job.status == JobStatus.QUEUED.value:
+            job.progress_percent = max(job.progress_percent, 10)
+            await self.transition(
+                session,
+                job_id=job_id,
+                expected_state=JobStatus.QUEUED,
+                target_state=JobStatus.PLANNING,
+                reason="Validated plan generation started.",
+                operation_key=operation_key,
+                correlation_id=correlation_id,
+            )
+        job.lease_owner = worker_id
+        job.lease_expires_at = utcnow() + timedelta(seconds=lease_seconds)
+        job.last_error_code = None
+        job.last_error_message = None
+        job.retryable = False
+        source = await session.get(Source, job.source_id)
+        if source is None:
+            raise InvalidTransition("Planning work is missing its source metadata.")
+        return PlanningOperation(
+            job_id=job.id,
+            project_id=job.project_id,
+            correlation_id=correlation_id,
+            operation_key=operation_key,
+            source_url=source.canonical_url,
+            task=job.task_description,
+            requested_fields=list(job.requested_fields),
+            options=dict(job.options),
+            output_formats=list(job.output_formats),
+        )
+
+    async def complete_planning(
+        self,
+        session: AsyncSession,
+        command: dict[str, object],
+        plan: CanonicalPlan,
+        *,
+        provider_name: str,
+        model_name: str,
+    ) -> bool:
+        """Persist a canonical plan and hand off exactly once to the existing browser boundary."""
         job_id = uuid.UUID(str(command["job_id"]))
         correlation_id = uuid.UUID(str(command["correlation_id"]))
         operation_key = str(command["operation_key"])
         job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
         if job is None or job.status in {JobStatus.BROWSER_INITIALIZING.value, JobStatus.CANCELLED.value}:
-            return
-        if job.status != JobStatus.QUEUED.value:
-            raise InvalidTransition("Planning command cannot claim the current job state.")
+            return False
+        if job.status != JobStatus.PLANNING.value:
+            raise InvalidTransition("Planning completion cannot update the current job state.")
         if job.cancel_requested_at:
             await self.transition(
                 session,
                 job_id=job_id,
-                expected_state=JobStatus.QUEUED,
+                expected_state=JobStatus.PLANNING,
                 target_state=JobStatus.CANCELLED,
-                reason="Cancellation acknowledged before planning.",
+                reason="Cancellation acknowledged before plan persistence.",
                 operation_key=operation_key,
                 correlation_id=correlation_id,
             )
-            return
-        job.lease_owner, job.lease_expires_at = worker_id, utcnow() + timedelta(seconds=120)
-        await self.transition(
-            session,
-            job_id=job_id,
-            expected_state=JobStatus.QUEUED,
-            target_state=JobStatus.PLANNING,
-            reason="Planning placeholder started.",
-            operation_key=operation_key,
-            correlation_id=correlation_id,
+            return False
+        existing = await session.scalar(
+            select(ExtractionPlan)
+            .where(ExtractionPlan.job_id == job_id, ExtractionPlan.version == plan.plan_version)
+            .with_for_update()
         )
+        if existing is not None:
+            raise InvalidTransition("Planning completion encountered an existing plan version.")
         session.add(
             ExtractionPlan(
                 job_id=job_id,
-                version=1,
+                version=plan.plan_version,
                 status="DRAFT",
-                plan={
-                    "version": 1,
-                    "status": "DRAFT",
-                    "source": {"type": "placeholder"},
-                    "fields": [],
-                    "steps": [],
-                },
-                model_name=None,
+                plan=plan.model_dump(mode="json"),
+                model_name=model_name,
+                provider_name=provider_name,
+                schema_version=plan.schema_version,
+                prompt_version=PROMPT_VERSION,
+                plan_hash=plan_hash(plan),
             )
         )
         await session.flush()
+        job.progress_percent = max(job.progress_percent, 20)
         await self.transition(
             session,
             job_id=job_id,
             expected_state=JobStatus.PLANNING,
             target_state=JobStatus.BROWSER_INITIALIZING,
-            reason="Deterministic plan placeholder stored; browser work is blocked until Phase 3.",
+            reason="Validated canonical plan stored; browser work remains at the Phase 3 capture boundary.",
             operation_key=operation_key,
             correlation_id=correlation_id,
         )
@@ -348,6 +441,65 @@ class JobService:
         )
         job.lease_owner = None
         job.lease_expires_at = None
+        return True
+
+    async def fail_planning(
+        self,
+        session: AsyncSession,
+        command: dict[str, object],
+        error: PlannerError,
+        *,
+        max_retries: int,
+    ) -> int | None:
+        """Persist a safe planner failure and return the durable retry attempt, if any."""
+        job_id = uuid.UUID(str(command["job_id"]))
+        correlation_id = uuid.UUID(str(command["correlation_id"]))
+        job = await session.scalar(select(ExtractionJob).where(ExtractionJob.id == job_id).with_for_update())
+        if job is None or job.status == JobStatus.CANCELLED.value:
+            return None
+        if job.status != JobStatus.PLANNING.value:
+            return None
+        if job.cancel_requested_at:
+            await self.transition(
+                session,
+                job_id=job.id,
+                expected_state=JobStatus.PLANNING,
+                target_state=JobStatus.CANCELLED,
+                reason="Planning operation cancelled safely.",
+                operation_key=str(command["operation_key"]),
+                correlation_id=correlation_id,
+            )
+            return None
+        job.last_error_code = error.code
+        job.last_error_message = error.message
+        job.retryable = error.retryable
+        job.lease_owner = None
+        job.lease_expires_at = None
+        if error.retryable:
+            job.attempt += 1
+            if job.attempt <= max_retries:
+                await self._append_event(
+                    session,
+                    job,
+                    "planning_retry_scheduled",
+                    {
+                        "stage": JobStatus.PLANNING.value,
+                        "message": "A transient planner failure will be retried.",
+                        "attempt": job.attempt,
+                    },
+                    correlation_id,
+                )
+                return job.attempt
+        await self.transition(
+            session,
+            job_id=job.id,
+            expected_state=JobStatus.PLANNING,
+            target_state=JobStatus.FAILED,
+            reason=error.message,
+            operation_key=str(command["operation_key"]),
+            correlation_id=correlation_id,
+        )
+        return None
 
     async def prepare_browser_capture(
         self, session: AsyncSession, command: dict[str, object], *, worker_id: str
@@ -578,7 +730,18 @@ class JobService:
                 records_valid=job.records_valid,
                 updated_at=job.updated_at,
             ),
-            plan=PlanProjection(version=plan.version, status=plan.status) if plan else None,
+            plan=(
+                PlanProjection(
+                    version=plan.version,
+                    status=plan.status,
+                    schema_version=plan.schema_version,
+                    model_name=plan.model_name,
+                    plan_hash=plan.plan_hash,
+                    created_at=plan.created_at,
+                )
+                if plan
+                else None
+            ),
             error=error,
             created_at=job.created_at,
             started_at=job.started_at,

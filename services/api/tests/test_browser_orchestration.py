@@ -1,11 +1,15 @@
 import uuid
 
 import pytest
+from planner_fixtures import valid_plan
 from sqlalchemy import select
 from wde_api.browser_errors import BrowserCancelled, BrowserLaunchError
 from wde_api.browser_types import BrowserArtifactResult, BrowserOperationResult, NavigationMetadata
+from wde_api.config import Settings
 from wde_api.database import SessionFactory
 from wde_api.models import BrowserArtifact, ExtractionJob, ProgressEvent, User, WorkOutbox
+from wde_api.planner_model import DeterministicPlannerModel
+from wde_api.planner_service import PlannerService
 from wde_api.schemas import JobCreateRequest
 from wde_api.services import JobService
 from wde_api.storage import ArtifactRef
@@ -36,6 +40,9 @@ def command() -> JobCreateRequest:
 
 async def prepare_browser_command() -> tuple[JobService, dict[str, object]]:
     service = JobService()
+    planner = PlannerService(
+        DeterministicPlannerModel(valid_plan()), Settings(planner_max_pages=100, planner_max_records=10_000)
+    )
     async with SessionFactory() as session:
         async with session.begin():
             principal = await session.scalar(select(User).where(User.email == "developer@example.invalid"))
@@ -43,12 +50,29 @@ async def prepare_browser_command() -> tuple[JobService, dict[str, object]]:
                 session,
                 command(),
                 principal_id=principal.id,
-                idempotency_key="phase3-orchestration-key",
+                idempotency_key=f"phase3-orchestration-{uuid.uuid4()}",
                 correlation_id=uuid.uuid4(),
             )
             planning = await session.scalar(select(WorkOutbox).where(WorkOutbox.job_id == accepted.job_id))
         async with session.begin():
-            await service.process_planning_placeholder(session, planning.payload, worker_id="test-worker")
+            operation = await service.claim_planning(
+                session, planning.payload, worker_id="test-worker", lease_seconds=120
+            )
+        plan = await planner.create_plan(
+            source_url=operation.source_url,
+            task=operation.task,
+            requested_fields=operation.requested_fields,
+            options=operation.options,
+            outputs=operation.output_formats,
+        )
+        async with session.begin():
+            await service.complete_planning(
+                session,
+                planning.payload,
+                plan,
+                provider_name=planner.model.provider_name,
+                model_name=planner.model.model_name,
+            )
         async with session.begin():
             browser_command = await session.scalar(
                 select(WorkOutbox).where(

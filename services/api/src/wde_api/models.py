@@ -134,6 +134,10 @@ class ExtractionPlan(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     plan: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     model_name: Mapped[str | None] = mapped_column(String(200))
+    provider_name: Mapped[str | None] = mapped_column(String(100))
+    schema_version: Mapped[str | None] = mapped_column(String(40))
+    prompt_version: Mapped[str | None] = mapped_column(String(80))
+    plan_hash: Mapped[str | None] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(32), default="DRAFT", nullable=False)
     created_at: Mapped[datetime] = created_at()
 
