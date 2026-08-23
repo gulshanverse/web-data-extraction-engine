@@ -1,0 +1,4 @@
+# Deployment preparation only. Do not populate account_id or project name until Phase 12B.
+name = "REPLACE_DURING_PHASE_12B"
+pages_build_output_dir = "out"
+compatibility_date = "2026-08-23"

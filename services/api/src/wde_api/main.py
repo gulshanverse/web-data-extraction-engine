@@ -9,12 +9,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import Depends, FastAPI, Header, Request
+from fastapi import Depends, FastAPI, Header, Request, Response
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from wde_api.auth import resolve_development_principal
+from wde_api.auth import issue_session_cookie, resolve_principal, resolve_session_cookie
 from wde_api.config import get_settings
 from wde_api.database import SessionFactory, dependency_ready, get_session
 from wde_api.domain import DomainError, JobStatus
@@ -33,7 +35,7 @@ from wde_api.schemas import (
 )
 from wde_api.security import SlidingWindowRateLimiter
 from wde_api.services import JobService
-from wde_api.storage import ArtifactRef, LocalArtifactStore
+from wde_api.storage import ArtifactRef, create_artifact_store
 
 service, dispatcher = JobService(), OutboxDispatcher()
 log = structlog.get_logger()
@@ -50,6 +52,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Web Data Extraction Engine API", version="0.2.0", lifespan=lifespan)
+if settings.app_env == "production":
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_host_list)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Correlation-ID"],
+        expose_headers=["X-Correlation-ID"],
+        max_age=600,
+    )
 
 
 @app.middleware("http")
@@ -127,6 +140,8 @@ async def correlation_middleware(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
+    if settings.app_env == "production":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault(
         "Cache-Control", "no-store" if request.url.path.startswith("/api/") else "no-cache"
     )
@@ -137,8 +152,18 @@ def correlation(request: Request) -> uuid.UUID:
     return request.state.correlation_id
 
 
-async def development_principal(request: Request, session: AsyncSession):
-    return await resolve_development_principal(session, request.headers.get("X-Dev-Principal"))
+async def principal(request: Request, session: AsyncSession):
+    return await resolve_principal(
+        session,
+        authorization=request.headers.get("Authorization"),
+        x_dev_principal=request.headers.get("X-Dev-Principal"),
+    )
+
+
+async def sse_principal(request: Request, session: AsyncSession):
+    if settings.app_env == "development":
+        return await principal(request, session)
+    return await resolve_session_cookie(session, request.cookies.get("wde_api_session"))
 
 
 @app.exception_handler(DomainError)
@@ -209,6 +234,29 @@ async def readiness() -> JSONResponse:
     )
 
 
+@app.post("/api/auth/session", status_code=204)
+async def establish_sse_session(
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Exchange a verified bearer token for a short-lived HttpOnly SSE session cookie."""
+    authenticated_user = await principal(request, session)
+    if settings.app_env == "development":
+        return response
+    response.status_code = 204
+    response.set_cookie(
+        "wde_api_session",
+        issue_session_cookie(authenticated_user, settings),
+        max_age=settings.auth_session_max_age_seconds,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/api",
+    )
+    return response
+
+
 @app.post(
     "/api/jobs",
     status_code=202,
@@ -226,11 +274,11 @@ async def create_job(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     session: AsyncSession = Depends(get_session),
 ) -> JobAccepted:
-    principal = await development_principal(request, session)
+    authenticated_user = await principal(request, session)
     result = await service.create_job(
         session,
         command,
-        principal_id=principal.id,
+        principal_id=authenticated_user.id,
         idempotency_key=idempotency_key,
         correlation_id=correlation(request),
     )
@@ -249,8 +297,8 @@ async def create_job(
 async def job_status(
     job_id: uuid.UUID, request: Request, session: AsyncSession = Depends(get_session)
 ) -> JobStatusResponse:
-    principal = await development_principal(request, session)
-    return await service.status(session, job_id=job_id, principal_id=principal.id)
+    authenticated_user = await principal(request, session)
+    return await service.status(session, job_id=job_id, principal_id=authenticated_user.id)
 
 
 @app.post(
@@ -262,9 +310,9 @@ async def job_status(
 async def cancel_job(
     job_id: uuid.UUID, request: Request, session: AsyncSession = Depends(get_session)
 ) -> CancelResponse:
-    principal = await development_principal(request, session)
+    authenticated_user = await principal(request, session)
     response = await service.cancel(
-        session, job_id=job_id, principal_id=principal.id, correlation_id=correlation(request)
+        session, job_id=job_id, principal_id=authenticated_user.id, correlation_id=correlation(request)
     )
     await session.commit()
     return response
@@ -278,11 +326,11 @@ async def job_results(
     page_size: int = 100,
     session: AsyncSession = Depends(get_session),
 ) -> ResultsResponse:
-    principal = await development_principal(request, session)
+    authenticated_user = await principal(request, session)
     return await service.results(
         session,
         job_id=job_id,
-        principal_id=principal.id,
+        principal_id=authenticated_user.id,
         page=max(1, page),
         page_size=min(max(1, page_size), 100),
     )
@@ -292,8 +340,8 @@ async def job_results(
 async def job_files(
     job_id: uuid.UUID, request: Request, session: AsyncSession = Depends(get_session)
 ) -> FilesResponse:
-    principal = await development_principal(request, session)
-    return await service.files(session, job_id=job_id, principal_id=principal.id)
+    authenticated_user = await principal(request, session)
+    return await service.files(session, job_id=job_id, principal_id=authenticated_user.id)
 
 
 @app.get("/api/files/{file_id}/download", responses={404: {"model": ErrorEnvelope}})
@@ -301,8 +349,8 @@ async def download_file(
     file_id: uuid.UUID, request: Request, session: AsyncSession = Depends(get_session)
 ) -> StreamingResponse:
     """Stream one authorized generated artifact; storage keys stay internal to the server."""
-    principal = await development_principal(request, session)
-    file, _ = await service.file_for_download(session, file_id=file_id, principal_id=principal.id)
+    authenticated_user = await principal(request, session)
+    file, _ = await service.file_for_download(session, file_id=file_id, principal_id=authenticated_user.id)
     reference = ArtifactRef(
         key=file.storage_key,
         artifact_type="generated_export",
@@ -312,7 +360,7 @@ async def download_file(
         created_at=file.created_at,
         expires_at=file.expires_at,
     )
-    store = LocalArtifactStore(get_settings().artifact_root, max_bytes=get_settings().export_max_bytes)
+    store = create_artifact_store(get_settings(), max_bytes=get_settings().export_max_bytes)
     return StreamingResponse(
         store.open(reference),
         media_type=file.media_type,
@@ -328,11 +376,11 @@ async def job_pages(
     page_size: int = 100,
     session: AsyncSession = Depends(get_session),
 ) -> PageInventoryResponse:
-    principal = await development_principal(request, session)
+    authenticated_user = await principal(request, session)
     return await service.pages(
         session,
         job_id=job_id,
-        principal_id=principal.id,
+        principal_id=authenticated_user.id,
         page=max(1, page),
         page_size=min(max(1, page_size), 100),
     )
@@ -345,8 +393,8 @@ async def job_events(
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
-    principal = await development_principal(request, session)
-    await service.get_job(session, job_id, principal.id)
+    authenticated_user = await sse_principal(request, session)
+    await service.get_job(session, job_id, authenticated_user.id)
     after = int(last_event_id or "0") if (last_event_id or "0").isdigit() else 0
 
     async def event_stream() -> AsyncIterator[str]:
@@ -367,5 +415,5 @@ async def job_events(
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
     )

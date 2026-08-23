@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: wde_test
+          POSTGRES_USER: wde
+          POSTGRES_PASSWORD: wde
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U wde -d wde_test" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      APP_ENV: development
+      DATABASE_URL: postgresql+asyncpg://wde:wde@localhost:5432/wde_test
+      WDE_TEST_DATABASE_URL: postgresql+asyncpg://wde:wde@localhost:5432/wde_test
+      REDIS_URL: redis://localhost:6379/15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install backend dependencies
+        run: python -m pip install --upgrade pip uv && uv sync --extra dev
+      - name: Verify migrations upgrade and downgrade
+        run: |
+          uv run alembic -c services/api/alembic.ini upgrade head
+          uv run alembic -c services/api/alembic.ini downgrade 0007_export_lifecycle_metadata
+          uv run alembic -c services/api/alembic.ini upgrade head
+      - name: Lint backend
+        run: uv run ruff check services/api/src services/api/tests
+      - name: Test backend
+        run: uv run pytest services/api/tests -q
+
+  frontend:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      NEXT_PUBLIC_API_BASE_URL: https://api.example.invalid
+      NEXT_PUBLIC_SUPABASE_URL: https://project.example.invalid
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: public-build-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - name: Enable package manager
+        run: corepack enable
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint, test, typecheck, and static build
+        run: pnpm lint && pnpm test && pnpm typecheck && NODE_ENV=production pnpm build:pages
+      - name: Audit production frontend dependencies
+        run: pnpm audit --prod --audit-level=high
+
+  supply-chain:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan tracked history and workspace for secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified
+      - name: Build production image
+        run: docker build --file Dockerfile.production --tag wde-api:ci .
+      - name: Validate production compose topology
+        run: cp .env.example .env.production && docker compose -f docker-compose.production.yml config --no-interpolate
+
+# Deliberately no deploy job: Phase 12A prepares CI only. Phase 12B must use protected environments and repository secrets.

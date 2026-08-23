@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,6 +61,7 @@ from wde_api.schemas import (
     ResultsResponse,
     ResultValidationProjection,
 )
+from wde_api.storage import ArtifactRef, ArtifactStore
 from wde_api.url_policy import validate_initial_url
 from wde_api.validation_errors import ValidationEngineError
 from wde_api.validation_service import ValidationService
@@ -2184,7 +2185,11 @@ class JobService:
             await session.execute(
                 select(GeneratedFile, ExportJob)
                 .join(ExportJob, GeneratedFile.export_job_id == ExportJob.id)
-                .where(ExportJob.job_id == job_id, ExportJob.status == "COMPLETED")
+                .where(
+                    ExportJob.job_id == job_id,
+                    ExportJob.status == "COMPLETED",
+                    or_(GeneratedFile.expires_at.is_(None), GeneratedFile.expires_at > utcnow()),
+                )
                 .order_by(GeneratedFile.created_at, GeneratedFile.id)
             )
         ).all()
@@ -2216,7 +2221,10 @@ class JobService:
             .join(ExtractionJob, ExportJob.job_id == ExtractionJob.id)
             .join(Project, ExtractionJob.project_id == Project.id)
             .where(
-                GeneratedFile.id == file_id, Project.owner_id == principal_id, ExportJob.status == "COMPLETED"
+                GeneratedFile.id == file_id,
+                Project.owner_id == principal_id,
+                ExportJob.status == "COMPLETED",
+                or_(GeneratedFile.expires_at.is_(None), GeneratedFile.expires_at > utcnow()),
             )
         )
         result = row.first()
@@ -2227,6 +2235,54 @@ class JobService:
             error.code, error.status_code = "NOT_FOUND", 404
             raise error
         return result
+
+    async def cleanup_expired_files(self, session: AsyncSession, *, store: ArtifactStore, limit: int) -> int:
+        """Delete only durable browser/export records whose explicit expiry has elapsed."""
+        generated_files = list(
+            await session.scalars(
+                select(GeneratedFile)
+                .where(GeneratedFile.expires_at.is_not(None), GeneratedFile.expires_at <= utcnow())
+                .order_by(GeneratedFile.expires_at, GeneratedFile.id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            )
+        )
+        browser_artifacts = list(
+            await session.scalars(
+                select(BrowserArtifact)
+                .where(BrowserArtifact.expires_at.is_not(None), BrowserArtifact.expires_at <= utcnow())
+                .order_by(BrowserArtifact.expires_at, BrowserArtifact.id)
+                .limit(max(0, limit - len(generated_files)))
+                .with_for_update(skip_locked=True)
+            )
+        )
+        for file in generated_files:
+            await store.delete(
+                ArtifactRef(
+                    key=file.storage_key,
+                    artifact_type="generated_export",
+                    media_type=file.media_type,
+                    byte_size=file.byte_size,
+                    checksum=file.checksum,
+                    created_at=file.created_at,
+                    expires_at=file.expires_at,
+                )
+            )
+            await session.delete(file)
+        for artifact in browser_artifacts:
+            await store.delete(
+                ArtifactRef(
+                    key=artifact.storage_key,
+                    artifact_type=artifact.artifact_type,
+                    media_type=artifact.media_type,
+                    byte_size=artifact.byte_size,
+                    checksum=artifact.checksum,
+                    created_at=artifact.created_at,
+                    expires_at=artifact.expires_at,
+                )
+            )
+            await session.delete(artifact)
+        return len(generated_files) + len(browser_artifacts)
 
     async def events_after(
         self, session: AsyncSession, *, job_id: uuid.UUID, after_sequence: int

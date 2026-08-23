@@ -1,0 +1,17 @@
+.git
+.github
+.manus-logs
+.pytest_cache
+.ruff_cache
+.venv
+**/__pycache__
+**/*.py[cod]
+apps
+docs
+tests
+.env
+.env.*
+!/.env.example
+node_modules
+pnpm-lock.yaml
+todo.md

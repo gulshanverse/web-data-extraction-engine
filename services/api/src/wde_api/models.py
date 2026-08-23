@@ -41,6 +41,7 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[uuid.UUID] = uuid_pk()
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
+    auth_subject: Mapped[str | None] = mapped_column(String(255), unique=True)
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE", nullable=False)
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = mapped_column(

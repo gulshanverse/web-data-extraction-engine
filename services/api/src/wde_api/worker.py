@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from datetime import timedelta
 
 import structlog
 from arq import Retry
@@ -13,6 +14,7 @@ from wde_api.browser_engine import PlaywrightBrowserEngine
 from wde_api.browser_errors import BrowserCancelled, BrowserEngineError
 from wde_api.browser_policy import DefaultBrowserPolicy
 from wde_api.browser_types import BrowserOperationRequest
+from wde_api.config import get_settings
 from wde_api.database import SessionFactory
 from wde_api.discovery_errors import (
     DiscoveryBrowserFailed,
@@ -46,8 +48,8 @@ from wde_api.planner_errors import PlannerError, PlannerUnavailable
 from wde_api.planner_model import build_planner_model
 from wde_api.planner_service import PlannerService
 from wde_api.queue import OutboxDispatcher, redis_settings
-from wde_api.services import JobService
-from wde_api.storage import LocalArtifactStore
+from wde_api.services import JobService, utcnow
+from wde_api.storage import create_artifact_store
 from wde_api.validation_errors import ValidationEngineError, ValidationInfrastructureError
 from wde_api.validation_service import ValidationService
 
@@ -82,7 +84,7 @@ async def startup(_: dict) -> None:
     _["discovery_service"] = DiscoveryService(settings)
     _["extraction_service"] = ExtractionService(max_evidence_chars=settings.extraction_max_evidence_chars)
     _["validation_service"] = ValidationService()
-    _["export_store"] = LocalArtifactStore(settings.artifact_root, max_bytes=settings.export_max_bytes)
+    _["export_store"] = create_artifact_store(settings, max_bytes=settings.export_max_bytes)
     _["export_capacity"] = asyncio.Semaphore(settings.export_max_concurrency)
 
 
@@ -92,6 +94,22 @@ async def recover_abandoned_work(_: dict) -> None:
         async with session.begin():
             await service.recover_expired_leases(session)
             await OutboxDispatcher().dispatch_pending(session)
+
+
+async def cleanup_expired_artifacts(ctx: dict) -> None:
+    """Bounded cleanup: only durable generated files past their explicit expiry are removed."""
+    from wde_api.config import get_settings
+
+    settings = get_settings()
+    async with SessionFactory() as session:
+        async with session.begin():
+            deleted = await JobService().cleanup_expired_files(
+                session,
+                store=ctx["export_store"],
+                limit=settings.artifact_cleanup_batch_size,
+            )
+    if deleted:
+        log.info("storage.expired_artifacts_deleted", count=deleted)
 
 
 async def run_planning(ctx: dict, command: dict[str, object]) -> None:
@@ -485,6 +503,7 @@ async def run_export(ctx: dict, command: dict[str, object]) -> None:
                         "format": operation.format_name,
                         "validation_run_id": str(operation.validation_run_id),
                     },
+                    expires_at=utcnow() + timedelta(days=settings.artifact_retention_days),
                 )
                 async with SessionFactory() as session:
                     async with session.begin():
@@ -533,10 +552,13 @@ async def run_export(ctx: dict, command: dict[str, object]) -> None:
 
 class WorkerSettings:
     functions = [run_planning, run_browser_capture, run_discovery, run_extraction, run_validation, run_export]
-    cron_jobs = [cron(recover_abandoned_work, second={0, 15, 30, 45})]
+    cron_jobs = [
+        cron(recover_abandoned_work, second={0, 15, 30, 45}),
+        cron(cleanup_expired_artifacts, minute={0}),
+    ]
     on_startup = startup
     redis_settings = redis_settings()
-    max_jobs = 10
+    max_jobs = get_settings().max_concurrent_jobs
     job_timeout = 120
     keep_result = 0
 

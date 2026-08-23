@@ -14,7 +14,7 @@ from wde_api.document_service import build_document, render_document
 from wde_api.export_errors import ExportTooLarge, ExportUnsupportedFormat
 from wde_api.export_types import EXPORT_SCHEMA_VERSION, CanonicalExportDataset, ExportFormat, ExportOptions
 from wde_api.planner_types import CanonicalPlan
-from wde_api.storage import ArtifactRef, LocalArtifactStore
+from wde_api.storage import ArtifactRef, ArtifactStore
 
 _FORMULA_PREFIXES = ("=", "+", "-", "@")
 _MEDIA = {
@@ -194,7 +194,7 @@ def render_export(dataset: CanonicalExportDataset, format_name: str) -> bytes:
 
 
 async def store_export(
-    store: LocalArtifactStore,
+    store: ArtifactStore,
     *,
     dataset: CanonicalExportDataset,
     format_name: str,

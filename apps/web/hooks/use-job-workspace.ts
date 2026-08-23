@@ -112,13 +112,18 @@ export function useJobWorkspace() {
 
   useEffect(() => {
     if (!job || ["COMPLETED", "FAILED", "CANCELLED"].includes(job.status)) return;
-    const stream = new EventSource(jobsApi.eventsUrl(job.job_id));
-    stream.onmessage = () => void refresh(job.job_id);
-    stream.onerror = () => {
-      stream.close();
-      window.setTimeout(() => void refresh(job.job_id), 1500);
-    };
-    return () => stream.close();
+    let stream: EventSource | null = null;
+    let active = true;
+    void jobsApi.prepareEvents().then(() => {
+      if (!active) return;
+      stream = new EventSource(jobsApi.eventsUrl(job.job_id), { withCredentials: true });
+      stream.onmessage = () => void refresh(job.job_id);
+      stream.onerror = () => {
+        stream?.close();
+        window.setTimeout(() => void refresh(job.job_id), 1500);
+      };
+    });
+    return () => { active = false; stream?.close(); };
   }, [job, refresh]);
 
   const progress = useMemo(() => job?.progress.percent ?? 0, [job]);

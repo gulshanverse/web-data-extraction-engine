@@ -9,7 +9,19 @@ from sqlalchemy.pool import NullPool
 
 from wde_api.config import get_settings
 
-engine = create_async_engine(get_settings().database_url, pool_pre_ping=True, poolclass=NullPool)
+settings = get_settings()
+engine_options = {"pool_pre_ping": True}
+if settings.app_env == "production":
+    engine_options.update(
+        {
+            "pool_size": settings.database_pool_size,
+            "max_overflow": settings.database_max_overflow,
+            "pool_timeout": settings.database_pool_timeout_seconds,
+        }
+    )
+else:
+    engine_options["poolclass"] = NullPool
+engine = create_async_engine(settings.database_url, **engine_options)
 SessionFactory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
 
 

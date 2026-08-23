@@ -6,6 +6,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from playwright.async_api import Download, Page, async_playwright
@@ -38,7 +39,7 @@ from wde_api.browser_types import (
     RenderedTableSignal,
 )
 from wde_api.config import Settings
-from wde_api.storage import LocalArtifactStore
+from wde_api.storage import ArtifactStore, create_artifact_store
 
 log = structlog.get_logger()
 
@@ -66,7 +67,7 @@ async def bytes_stream(payload: bytes) -> AsyncIterator[bytes]:
 class PlaywrightBrowserEngine(BrowserEngine):
     settings: Settings
     policy_factory: Callable[[BrowserOperationRequest], BrowserPolicy]
-    artifact_store: LocalArtifactStore
+    artifact_store: ArtifactStore
     capacity: BrowserCapacity
 
     @classmethod
@@ -76,9 +77,7 @@ class PlaywrightBrowserEngine(BrowserEngine):
         return cls(
             settings=settings,
             policy_factory=policy_factory,
-            artifact_store=LocalArtifactStore(
-                settings.artifact_root, max_bytes=settings.browser_max_download_bytes
-            ),
+            artifact_store=create_artifact_store(settings, max_bytes=settings.browser_max_download_bytes),
             capacity=BrowserCapacity(settings.browser_max_contexts),
         )
 
@@ -300,7 +299,11 @@ class PlaywrightBrowserEngine(BrowserEngine):
         if len(image) > self.settings.browser_max_screenshot_bytes:
             raise BrowserResourceLimit("The screenshot exceeded its configured size limit.")
         ref = await self.artifact_store.put(
-            "browser_screenshot", bytes_stream(image), media_type="image/png", metadata={}
+            "browser_screenshot",
+            bytes_stream(image),
+            media_type="image/png",
+            metadata={},
+            expires_at=datetime.now(UTC) + timedelta(days=self.settings.artifact_retention_days),
         )
         return BrowserArtifactResult("full_page_screenshot" if full_page else "viewport_screenshot", ref)
 
@@ -431,7 +434,11 @@ class PlaywrightBrowserEngine(BrowserEngine):
                     yield chunk
 
         ref = await self.artifact_store.put(
-            "browser_download", download_stream(), media_type="application/octet-stream", metadata={}
+            "browser_download",
+            download_stream(),
+            media_type="application/octet-stream",
+            metadata={},
+            expires_at=datetime.now(UTC) + timedelta(days=self.settings.artifact_retention_days),
         )
         return BrowserArtifactResult("download", ref)
 

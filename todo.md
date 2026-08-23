@@ -129,3 +129,12 @@
 - [x] Implement bounded input, browser-policy, authorization, API, storage, queue, worker, logging, error, and resource hardening without Phase 12 work.
 - [x] Add adversarial SSRF, URL, AI, cross-user, SSE, export, document, filesystem, resource, concurrency, cancellation, retry, and recovery coverage.
 - [x] Run full backend/frontend/migration/dependency/secret/boundary validation, commit, and push Phase 11 to `main`.
+
+## Phase 12A Production Infrastructure Provisioning + Configuration Checklist
+
+- [x] Complete the locked-provider capability review and Phase 0–11 repository/deployment baseline.
+- [x] Design the Cloudflare Pages, Supabase Auth/PostgreSQL/Storage, Oracle VM Docker, Upstash Redis, and GitHub Actions configuration within existing contracts.
+- [x] Implement production authentication, storage adapter, explicit CORS/trusted-host configuration, resource limits, observability, retention, Docker topology, and CI preparation without deployment.
+- [x] Add production-configuration, authentication, object-storage, retention, frontend/static-export, migration, and regression coverage; Docker build/runtime remains locally blocked because no container runtime is installed.
+- [x] Publish the provider setup guide, production runbook, rollback/backup procedures, and exact external provisioning requirements without fabricating deployment success.
+- [x] Create the required commit and verify the local repository state; the non-force `main` push is the final handoff action.
